@@ -92,6 +92,19 @@ accept `{profile_dir}`, `{temp_dir}`, `{extract_dir}` and `{download_dir}`. An u
 placeholder is reported as an error naming the setting it came from, rather than silently
 producing a broken path.
 
+## When something goes wrong
+
+The update check is best-effort: it must never stand between you and your browser. If GitHub is
+unreachable, the download fails, or the archive is damaged, the failure is written to
+`launch.log` and the currently installed build starts anyway. A damaged archive is discarded so
+the next run fetches it again.
+
+`latest.txt` records what is *installed*, not what was downloaded, so an update that did not
+complete is simply retried on the next launch.
+
+Errors that do prevent a launch are shown in a message box rather than on stderr, since the
+script is normally started from a shortcut with no console attached.
+
 ## When Chromium is already running
 
 If an update is available but the `chrome.exe` in `bin/` is still running, replacing it would
