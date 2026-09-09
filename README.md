@@ -2,9 +2,8 @@
 
 A single-file launcher that keeps a portable Chromium install up to date on Windows.
 
-On each start it asks the GitHub API for the latest Chromium release in the configured repository, 
-downloads the asset (eg `_windows_x64.zip`) if it's not already on disk, 
-extracts it into `bin/`, and launches `chrome.exe` against your profile directory. 
+On each start it asks GitHub for the latest Chromium release in the configured repository, 
+downloads the asset (eg `_windows_x64.zip`) if it's not already on disk and launches `chrome.exe` against your profile directory. 
 
 ## Requirements
 
@@ -13,10 +12,12 @@ extracts it into `bin/`, and launches `chrome.exe` against your profile director
 
 ## Usage
 
-Once Python is installed, just double click `Chromium.py` script. 
+Once Python is installed just double click `Chromium.py` script. 
 
 You can also run it with arguments. These are forwarded to Chromium after the configured ones, 
 so `python Chromium.py --incognito https://example.com` works as you'd expect.
+
+## Portable
 
 All files live in the work directory next to `Chromium.py`:
 
@@ -24,20 +25,20 @@ All files live in the work directory next to `Chromium.py`:
 | ------------ | -------------------------------------------- |
 | `download/`  | the downloaded release zip (older ones are pruned) |
 | `bin/`       | the extracted Chromium build                 |
-| `profile/`   | the browser profile                          |
+| `profile/`   | your browser profile                          |
 | `temp/`      | disk cache, crash dumps                      |
 | `latest.txt` | name of the currently installed release asset |
-| `launch.log` | timestamped log of each run (rotated to `.old` past 256 KB) |
+| `launch.log` | timestamped log of each run                  |
 | `config.jsonc` | generated on first run; yours to edit      |
 
 ## Configuration
 
-On its first run the script creates `config.jsonc` containing the default
-configuartion. This file never gets overwritten, so your changes are
-safe across updates. Any key you remove falls back to its built-in default. 
+On its first run the script creates its default configuration in `config.jsonc`. 
+This file never gets overwritten, so your changes are safe across updates. 
+Any key you remove falls back to its built-in default. 
 Delete it to get a fresh copy of the defaults.
 
-Edit it to your liking, for example:
+Edit `config.jsonc` to your liking, for example:
 
 ```jsonc
 {
@@ -45,7 +46,7 @@ Edit it to your liking, for example:
   "repo": "ungoogled-software/ungoogled-chromium-windows",
   "asset_suffix": "_windows_x64.zip",
 
-  // Keep the profile outside the repo folder
+  // Keep the profile outside the work dir
   "profile_dir": "{base_dir}/../chromium-profile",
 
   // Cache in the system temp directory instead
