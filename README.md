@@ -34,12 +34,19 @@ Everything lives beside the script:
 | `temp/`      | disk cache, crash dumps                      |
 | `latest.txt` | name of the currently installed release asset |
 | `launch.log` | timestamped log of each run                  |
+| `config.jsonc` | generated on first run; yours to edit      |
 
 ## Configuration
 
-Drop an optional `config.jsonc` next to the script to override any default. It is plain JSON
-with whole-line `//` comments allowed. Missing keys fall back to the built-in defaults, and if
-the file doesn't exist at all the defaults are used as-is.
+On its first run the script writes a `config.jsonc` next to itself containing every default
+value, along with a comment block listing the available placeholders — so there is nothing to
+look up to start editing. The file is written once and never overwritten, so your changes are
+safe across updates; delete it to get a fresh copy of the defaults.
+
+It is plain JSON with whole-line `//` comments allowed. Any key you remove falls back to its
+built-in default, and if the file is missing entirely the defaults are used as-is.
+
+Edit it to taste — for example:
 
 ```jsonc
 {
@@ -77,6 +84,8 @@ the file doesn't exist at all the defaults are used as-is.
 Relative paths are resolved against the script's directory.
 
 ### Placeholders
+
+These are also listed in the comment header of the generated `config.jsonc`.
 
 Path settings accept `{base_dir}` and `{system_temp}`. Entries in `chromium_args` additionally
 accept `{profile_dir}`, `{temp_dir}`, `{extract_dir}` and `{download_dir}`. An unknown

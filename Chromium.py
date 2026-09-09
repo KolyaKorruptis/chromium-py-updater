@@ -18,6 +18,27 @@ MB_YESNO = 0x04
 MB_ICONQUESTION = 0x20
 IDYES = 6
 
+CONFIG_COMMENT = """\
+  // Supported placeholders:
+  // {base_dir}     = script folder
+  // {system_temp}  = Windows temp folder
+  // {profile_dir}  = resolved profile path
+  // {temp_dir}     = resolved temp path
+  // {extract_dir}  = resolved bin path
+  // {download_dir} = resolved download path
+  //
+  // Paths may be relative or absolute.
+  // Relative paths are resolved against {base_dir}."""
+
+
+def write_default_config(path: Path, config: dict) -> None:
+    lines = json.dumps(config, indent=2).splitlines()
+    path.write_text(
+        "\n".join([lines[0], CONFIG_COMMENT, *lines[1:]]) + "\n",
+        encoding="utf-8",
+    )
+
+
 def load_config() -> dict:
     default_config = {
         "repo": "ungoogled-software/ungoogled-chromium-windows",
@@ -27,7 +48,7 @@ def load_config() -> dict:
         "profile_dir": "profile",
         "version_file": "latest.txt",
         "log_file": "launch.log",
-        "temp_dir": str(BASE_DIR / "temp"),
+        "temp_dir": "temp",
         "chromium_args": [
             "--user-data-dir={profile_dir}",
             "--no-default-browser-check",
@@ -40,6 +61,10 @@ def load_config() -> dict:
     }
 
     if not CONFIG_FILE.exists():
+        try:
+            write_default_config(CONFIG_FILE, default_config)
+        except OSError:
+            pass
         return default_config
 
     def load_jsonc(path: Path) -> dict:
