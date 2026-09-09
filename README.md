@@ -61,6 +61,16 @@ Edit `config.jsonc` to your liking, for example:
 }
 ```
 
+## Good to know
+
+**If Chromium is running when an update is due**, you'll be asked what to do: skip the update and
+launch straight away, or cancel and try again later. Skipping is safe — the update is simply
+applied the next time you start with Chromium closed.
+
+**If GitHub can't be reached**, the launcher starts the version you already have rather than
+refusing to run, so a dropped connection never leaves you without a browser. The reason is
+recorded in `launch.log`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
