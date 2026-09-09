@@ -18,6 +18,9 @@ CONFIG_FILE = BASE_DIR / "config.jsonc"
 API_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 120
 
+# One previous log is kept alongside the current one.
+LOG_MAX_BYTES = 256 * 1024
+
 MB_OK = 0x00
 MB_YESNO = 0x04
 MB_ICONERROR = 0x10
@@ -28,6 +31,8 @@ IDYES = 6
 def log(message: str) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     try:
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_MAX_BYTES:
+            LOG_FILE.replace(LOG_FILE.with_name(LOG_FILE.name + ".old"))
         with LOG_FILE.open("a", encoding="utf-8") as f:
             f.write(f"{timestamp} {message}\n")
     except Exception:
@@ -111,6 +116,13 @@ def load_config() -> dict:
         return json.loads("\n".join(lines))
 
     user_config = load_jsonc(CONFIG_FILE)
+
+    unknown = sorted(set(user_config) - set(default_config))
+    if unknown:
+        raise RuntimeError(
+            f"Unknown setting(s) in {CONFIG_FILE.name}: {', '.join(unknown)}. "
+            f"Known settings: {', '.join(sorted(default_config))}"
+        )
 
     default_config.update(user_config)
     return default_config
@@ -196,10 +208,18 @@ def download_file(url: str, dest: Path) -> None:
         url,
         headers={"User-Agent": "chromium-launcher"},
     )
-    with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as response, dest.open(
-        "wb"
-    ) as f:
-        shutil.copyfileobj(response, f)
+    # Downloaded beside the target and renamed on success, so an interrupted
+    # transfer never leaves something that looks like a complete archive.
+    part = dest.with_name(dest.name + ".part")
+    try:
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as response, part.open(
+            "wb"
+        ) as f:
+            shutil.copyfileobj(response, f)
+        part.replace(dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
 
 
 def find_asset(release: dict) -> dict | None:
@@ -230,6 +250,8 @@ def remove_old_zips(keep_name: str) -> None:
     for zip_path in DOWNLOAD_DIR.glob("*.zip"):
         if zip_path.name != keep_name:
             zip_path.unlink(missing_ok=True)
+    for part in DOWNLOAD_DIR.glob("*.part"):
+        part.unlink(missing_ok=True)
 
 
 # Takes no arguments on purpose: nothing of ours is interpolated into the

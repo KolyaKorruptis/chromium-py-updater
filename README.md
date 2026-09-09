@@ -33,7 +33,7 @@ Everything lives beside the script:
 | `profile/`   | the browser profile                          |
 | `temp/`      | disk cache, crash dumps                      |
 | `latest.txt` | name of the currently installed release asset |
-| `launch.log` | timestamped log of each run                  |
+| `launch.log` | timestamped log of each run (rotated to `.old` past 256 KB) |
 | `config.jsonc` | generated on first run; yours to edit      |
 
 ## Configuration
@@ -44,7 +44,8 @@ look up to start editing. The file is written once and never overwritten, so you
 safe across updates; delete it to get a fresh copy of the defaults.
 
 It is plain JSON with whole-line `//` comments allowed. Any key you remove falls back to its
-built-in default, and if the file is missing entirely the defaults are used as-is.
+built-in default, and if the file is missing entirely the defaults are used as-is. A key that
+isn't recognised is reported by name rather than ignored, so a typo doesn't quietly do nothing.
 
 Edit it to taste — for example:
 

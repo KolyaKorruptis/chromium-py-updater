@@ -4,7 +4,7 @@ bin/
 profile/
 temp/
 latest.txt
-launch.log
+launch.log*
 
 # Local configuration
 config.jsonc
