@@ -14,6 +14,10 @@ from string import Formatter
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.jsonc"
 
+# Applied per socket operation, not to the transfer as a whole.
+API_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 120
+
 MB_OK = 0x00
 MB_YESNO = 0x04
 MB_ICONERROR = 0x10
@@ -183,7 +187,7 @@ def http_get_json(url: str) -> dict:
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(req) as response:
+    with urllib.request.urlopen(req, timeout=API_TIMEOUT) as response:
         return json.load(response)
 
 
@@ -192,7 +196,9 @@ def download_file(url: str, dest: Path) -> None:
         url,
         headers={"User-Agent": "chromium-launcher"},
     )
-    with urllib.request.urlopen(req) as response, dest.open("wb") as f:
+    with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as response, dest.open(
+        "wb"
+    ) as f:
         shutil.copyfileobj(response, f)
 
 
@@ -226,27 +232,31 @@ def remove_old_zips(keep_name: str) -> None:
             zip_path.unlink(missing_ok=True)
 
 
-def is_chromium_running(chrome_exe: Path) -> bool:
-    chrome_exe_str = str(chrome_exe.resolve()).lower()
-
-    ps_script = rf"""
-$target = [System.IO.Path]::GetFullPath("{chrome_exe_str}")
-$running = Get-CimInstance Win32_Process | Where-Object {{
-    $_.Name -match '^(chrome|chromium)\.exe$' -and
-    $_.ExecutablePath -and
-    $_.ExecutablePath.ToLower() -eq $target
-}}
-if ($running) {{ exit 1 }} else {{ exit 0 }}
+# Takes no arguments on purpose: nothing of ours is interpolated into the
+# script, so no path can alter it. The matching happens in Python instead.
+PS_RUNNING_PATHS = r"""
+Get-CimInstance Win32_Process |
+    Where-Object { $_.Name -match '^(chrome|chromium)\.exe$' -and $_.ExecutablePath } |
+    ForEach-Object { $_.ExecutablePath }
 """
 
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", ps_script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
 
-    return result.returncode != 0
+def is_chromium_running(chrome_exe: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", PS_RUNNING_PATHS],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as e:
+        # Assume it is closed; a locked file fails the extraction anyway, and
+        # that path now falls back to launching what is installed.
+        log(f"Could not check for a running Chromium: {e}")
+        return False
+
+    target = str(chrome_exe.resolve()).lower()
+    return any(line.strip().lower() == target for line in result.stdout.splitlines())
 
 
 def ask_update_while_running() -> bool:
