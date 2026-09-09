@@ -21,6 +21,8 @@ DOWNLOAD_TIMEOUT = 120
 # One previous log is kept alongside the current one.
 LOG_MAX_BYTES = 256 * 1024
 
+DOWNLOAD_CHUNK = 256 * 1024
+
 MB_OK = 0x00
 MB_YESNO = 0x04
 MB_ICONERROR = 0x10
@@ -28,7 +30,26 @@ MB_ICONQUESTION = 0x20
 IDYES = 6
 
 
-def log(message: str) -> None:
+def console(message: str = "", end: str = "\n", stream=None) -> None:
+    """Write to the console, if there is one.
+
+    Started from a shortcut with pythonw.exe there is no console at all and
+    the streams are None, which print() already treats as a no-op. Writing
+    output must never be the reason a download or launch fails, so a broken
+    or closed stream is ignored too.
+    """
+    try:
+        print(message, end=end, file=stream, flush=True)
+    except Exception:
+        pass
+
+
+def console_is_interactive() -> bool:
+    """True for a real terminal, False when redirected or absent."""
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
+def write_log(message: str) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     try:
         if LOG_FILE.exists() and LOG_FILE.stat().st_size > LOG_MAX_BYTES:
@@ -39,13 +60,18 @@ def log(message: str) -> None:
         pass
 
 
+def log(message: str) -> None:
+    write_log(message)
+    console(message)
+
+
 def show_error(message: str) -> None:
     """Report a fatal error.
 
     The launcher is normally started from a shortcut, where stderr goes
     nowhere, so a message box is the only thing the user will actually see.
     """
-    log(f"ERROR: {message}")
+    write_log(f"ERROR: {message}")
     try:
         ctypes.windll.user32.MessageBoxW(
             0,
@@ -55,7 +81,7 @@ def show_error(message: str) -> None:
         )
     except Exception:
         pass
-    print(f"Failed to launch Chromium: {message}", file=sys.stderr)
+    console(f"Failed to launch Chromium: {message}", stream=sys.stderr)
 
 CONFIG_COMMENT = """\
   // Supported placeholders:
@@ -203,6 +229,46 @@ def http_get_json(url: str) -> dict:
         return json.load(response)
 
 
+def format_mib(num_bytes: int) -> str:
+    return f"{num_bytes / (1024 * 1024):.1f}"
+
+
+class DownloadProgress:
+    """Console feedback for a download of a few hundred megabytes.
+
+    Rewrites a single line on a terminal, prints a line every 10% when output
+    is redirected, and stays silent when there is no console.
+    """
+
+    def __init__(self, total: int) -> None:
+        self.total = total
+        self.interactive = console_is_interactive()
+        self.end = "\r" if self.interactive else "\n"
+        self.step = -1
+
+    def update(self, done: int) -> None:
+        if self.total <= 0:
+            # No Content-Length: report every 16 MiB so it is visibly moving.
+            step = done // (16 * 1024 * 1024)
+            if step != self.step:
+                self.step = step
+                console(f"  {format_mib(done)} MiB", end=self.end)
+            return
+
+        percent = min(100, int(done * 100 / self.total))
+        step = percent if self.interactive else percent // 10
+        if step != self.step:
+            self.step = step
+            console(
+                f"  {percent:3d}%  {format_mib(done)} / {format_mib(self.total)} MiB",
+                end=self.end,
+            )
+
+    def finish(self) -> None:
+        if self.interactive and self.step >= 0:
+            console()
+
+
 def download_file(url: str, dest: Path) -> None:
     req = urllib.request.Request(
         url,
@@ -215,7 +281,16 @@ def download_file(url: str, dest: Path) -> None:
         with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT) as response, part.open(
             "wb"
         ) as f:
-            shutil.copyfileobj(response, f)
+            progress = DownloadProgress(int(response.headers.get("Content-Length") or 0))
+            done = 0
+            while True:
+                chunk = response.read(DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                progress.update(done)
+            progress.finish()
         part.replace(dest)
     except BaseException:
         part.unlink(missing_ok=True)
@@ -352,6 +427,7 @@ class UpdateError(Exception):
 
 
 def fetch_latest_asset() -> dict:
+    log("Checking latest release")
     try:
         release = http_get_json(API_URL)
     except Exception as e:

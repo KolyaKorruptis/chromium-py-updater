@@ -24,6 +24,21 @@ python Chromium.py [extra chromium args...]
 Any arguments you pass are forwarded to Chromium after the configured ones, so
 `python Chromium.py --incognito https://example.com` works as you'd expect.
 
+Run from a console, it reports what it is doing, with a progress line for the download:
+
+```
+Checking latest release
+Downloading 141.0.7390.65_windows_x64.zip
+   47%  71.5 / 152.0 MiB
+Extracting archive
+Installed 141.0.7390.65_windows_x64.zip
+Starting Chromium
+```
+
+The progress line rewrites itself on a terminal and prints every 10% when output is redirected
+to a file. Started from a shortcut with `pythonw.exe` there is no console, and the same messages
+go only to `launch.log`.
+
 Everything lives beside the script:
 
 | Path         | Contents                                     |
