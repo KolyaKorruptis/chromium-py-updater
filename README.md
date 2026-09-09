@@ -2,9 +2,9 @@
 
 A single-file launcher that keeps a portable Chromium install up to date on Windows.
 
-On each start it asks the GitHub API for the latest release in the configured repository, 
-downloads the configured asset (eg `_windows_x64.zip`) if it's not already on disk, 
-extracts it into `bin/`, and launches `chrome.exe` against your configured profile directory. 
+On each start it asks the GitHub API for the latest Chromium release in the configured repository, 
+downloads the asset (eg `_windows_x64.zip`) if it's not already on disk, 
+extracts it into `bin/`, and launches `chrome.exe` against your profile directory. 
 
 ## Requirements
 
@@ -14,10 +14,11 @@ extracts it into `bin/`, and launches `chrome.exe` against your configured profi
 ## Usage
 
 Once Python is installed, just double click `Chromium.py` script. 
+
 You can also run it with arguments. These are forwarded to Chromium after the configured ones, 
 so `python Chromium.py --incognito https://example.com` works as you'd expect.
 
-Everything lives in the work directory next to `Chromium.py`:
+All files live in the work directory next to `Chromium.py`:
 
 | Path         | Contents                                     |
 | ------------ | -------------------------------------------- |
@@ -32,7 +33,7 @@ Everything lives in the work directory next to `Chromium.py`:
 ## Configuration
 
 On its first run the script creates `config.jsonc` containing the default
-values. The file is written once and never overwritten, so your changes are
+configuartion. This file never gets overwritten, so your changes are
 safe across updates. Any key you remove falls back to its built-in default. 
 Delete it to get a fresh copy of the defaults.
 
