@@ -1,0 +1,15 @@
+# Runtime artifacts created by Chromium.py
+download/
+bin/
+profile/
+temp/
+latest.txt
+launch.log
+
+# Local configuration
+config.jsonc
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
