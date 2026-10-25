@@ -106,8 +106,8 @@ def write_default_config(path: Path, config: dict) -> None:
 
 def load_config() -> dict:
     default_config = {
-        "repo": "ungoogled-software/ungoogled-chromium-windows",
-        "asset_suffix": "_windows_x64.zip",
+        "repo": "macchrome/winchrome",
+        "asset_suffix": "_Win64.7z",
         "download_dir": "download",
         "extract_dir": "bin",
         "profile_dir": "profile",
