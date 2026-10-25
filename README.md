@@ -3,7 +3,7 @@
 A single-file launcher that keeps a portable Chromium install up to date on Windows.
 
 On each start it asks GitHub for the latest Chromium release in the configured repository, 
-downloads the asset (eg `_windows_x64.zip`) if it's not already on disk and launches `chrome.exe` against your profile directory. 
+downloads the chromium build from the release assets if it's not already on disk and launches `chrome.exe` against your profile directory. 
 
 ## Requirements
 
@@ -70,6 +70,8 @@ applied the next time you start with Chromium closed.
 **If GitHub can't be reached**, the launcher starts the version you already have rather than
 refusing to run, so a dropped connection never leaves you without a browser. The reason is
 recorded in `launch.log`.
+
+**You can find reliable build repositories** on https://chromiumbuilds.org/windows/
 
 ## License
 
