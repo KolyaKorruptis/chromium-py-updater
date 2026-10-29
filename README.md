@@ -2,19 +2,20 @@
 
 A single-file launcher that keeps a portable Chromium install up to date on Windows.
 
-On each start it asks GitHub for the latest Chromium release in the configured repository, 
-downloads the chromium build from the release assets if it's not already on disk and launches `chrome.exe` against your profile directory. 
+On each start it asks GitHub for the latest Chromium release in the configured repository,
+downloads the chromium build from the release assets if it's not already on disk and launches `chrome.exe` against your profile directory.
 
 ## Requirements
 
 - Windows
 - Python 3.10 or newer (standard library)
+- For `.7z` releases: Windows 11, or 7-Zip installed
 
 ## Usage
 
-Once Python is installed just double click `Chromium.py` script. 
+Once Python is installed just double click `Chromium.py` script.
 
-You can also run it with arguments. These are forwarded to Chromium after the configured ones, 
+You can also run it with arguments. These are forwarded to Chromium after the configured ones,
 so `python Chromium.py --incognito https://example.com` works as you'd expect.
 
 ## Portable
@@ -23,7 +24,7 @@ All files live in the work directory next to `Chromium.py`:
 
 | Path         | Contents                                     |
 | ------------ | -------------------------------------------- |
-| `download/`  | the downloaded release zip (older ones are pruned) |
+| `download/`  | the downloaded release archive (older ones are pruned) |
 | `bin/`       | the extracted Chromium build                 |
 | `profile/`   | your browser profile                          |
 | `temp/`      | disk cache, crash dumps                      |
@@ -33,9 +34,9 @@ All files live in the work directory next to `Chromium.py`:
 
 ## Configuration
 
-On its first run the script creates its default configuration in `config.jsonc`. 
-This file never gets overwritten, so your changes are safe across updates. 
-Any key you remove falls back to its built-in default. 
+On its first run the script creates its default configuration in `config.jsonc`.
+This file never gets overwritten, so your changes are safe across updates.
+Any key you remove falls back to its built-in default.
 Delete it to get a fresh copy of the defaults.
 
 Edit `config.jsonc` to your liking, for example:

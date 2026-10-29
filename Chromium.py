@@ -1,5 +1,6 @@
 import ctypes
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -321,10 +322,11 @@ def recreate_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def remove_old_zips(keep_name: str) -> None:
-    for zip_path in DOWNLOAD_DIR.glob("*.zip"):
-        if zip_path.name != keep_name:
-            zip_path.unlink(missing_ok=True)
+def remove_old_archives(keep_name: str) -> None:
+    for pattern in ("*.zip", "*.7z"):
+        for archive in DOWNLOAD_DIR.glob(pattern):
+            if archive.name != keep_name:
+                archive.unlink(missing_ok=True)
     for part in DOWNLOAD_DIR.glob("*.part"):
         part.unlink(missing_ok=True)
 
@@ -371,13 +373,68 @@ def ask_update_while_running() -> bool:
     return result == IDYES
 
 
-def extract_zip_flat(zip_file: Path, extract_dir: Path) -> None:
+SYSTEM_TAR = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tar.exe"
+
+
+def find_7zip() -> Path | None:
+    found = shutil.which("7z")
+    if found:
+        return Path(found)
+    for env_var in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(env_var)
+        if root and (Path(root) / "7-Zip" / "7z.exe").exists():
+            return Path(root) / "7-Zip" / "7z.exe"
+    return None
+
+
+def run_extractor(args: list[str]) -> None:
+    # CREATE_NO_WINDOW: started with pythonw.exe, a console tool would
+    # otherwise flash up its own window.
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout).strip().splitlines()
+        raise RuntimeError(output[-1] if output else f"exit code {result.returncode}")
+
+
+def extract_archive(archive: Path, dest: Path) -> None:
+    if archive.suffix.lower() == ".zip":
+        with zipfile.ZipFile(archive, "r") as zf:
+            zf.extractall(dest)
+        return
+
+    # Python cannot read 7z on its own. Windows 11 ships a tar that can;
+    # Windows 10's cannot, so an installed 7-Zip is the fallback there.
+    try:
+        run_extractor([str(SYSTEM_TAR), "-xf", str(archive), "-C", str(dest)])
+        return
+    except Exception as e:
+        tar_error = e
+
+    sevenzip = find_7zip()
+    if not sevenzip:
+        raise RuntimeError(
+            f"Windows could not unpack it ({tar_error}) and 7-Zip was not found. "
+            "Install 7-Zip from https://www.7-zip.org or choose a release "
+            "that comes as a .zip file"
+        )
+
+    log(f"Windows tar failed ({tar_error}), using 7-Zip")
+    recreate_dir(dest)
+    run_extractor([str(sevenzip), "x", "-y", f"-o{dest}", str(archive)])
+
+
+def extract_flat(archive: Path, extract_dir: Path) -> None:
     with tempfile.TemporaryDirectory(dir=BASE_DIR) as tmp_dir:
         tmp_path = Path(tmp_dir)
 
         log("Extracting archive")
-        with zipfile.ZipFile(zip_file, "r") as zf:
-            zf.extractall(tmp_path)
+        extract_archive(archive, tmp_path)
 
         top_level_items = list(tmp_path.iterdir())
 
@@ -446,23 +503,23 @@ def update_to_latest() -> bool:
     """
     asset = fetch_latest_asset()
     asset_name = asset["name"]
-    zip_file = DOWNLOAD_DIR / asset_name
+    archive = DOWNLOAD_DIR / asset_name
     chrome_exe = EXTRACT_DIR / "chrome.exe"
 
     if read_text_file(VERSION_FILE) == asset_name and chrome_exe.exists():
         log(f"Already up to date: {asset_name}")
         return True
 
-    if zip_file.exists():
+    if archive.exists():
         log(f"Already downloaded: {asset_name}")
     else:
         log(f"Downloading {asset_name}")
         try:
-            download_file(asset["browser_download_url"], zip_file)
+            download_file(asset["browser_download_url"], archive)
         except Exception as e:
             raise UpdateError(f"Download of {asset_name} failed: {e}") from e
 
-    remove_old_zips(asset_name)
+    remove_old_archives(asset_name)
 
     if chrome_exe.exists() and is_chromium_running(chrome_exe):
         log("An update is pending while Chromium is running")
@@ -474,10 +531,10 @@ def update_to_latest() -> bool:
         return True
 
     try:
-        extract_zip_flat(zip_file, EXTRACT_DIR)
+        extract_flat(archive, EXTRACT_DIR)
     except Exception as e:
         # A damaged archive must not be kept, or every later run repeats it.
-        zip_file.unlink(missing_ok=True)
+        archive.unlink(missing_ok=True)
         raise UpdateError(f"Could not extract {asset_name}: {e}") from e
 
     # Written only here: the version file records what is installed, not what
