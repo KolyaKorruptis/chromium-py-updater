@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import winreg
 import zipfile
 from pathlib import Path
 from string import Formatter
@@ -25,10 +26,7 @@ LOG_MAX_BYTES = 256 * 1024
 DOWNLOAD_CHUNK = 256 * 1024
 
 MB_OK = 0x00
-MB_YESNO = 0x04
 MB_ICONERROR = 0x10
-MB_ICONQUESTION = 0x20
-IDYES = 6
 
 
 def console(message: str = "", end: str = "\n", stream=None) -> None:
@@ -66,7 +64,7 @@ def log(message: str) -> None:
     console(message)
 
 
-def show_error(message: str) -> None:
+def show_error(message: str, headline: str = "Failed to launch Chromium") -> None:
     """Report a fatal error.
 
     The launcher is normally started from a shortcut, where stderr goes
@@ -76,13 +74,13 @@ def show_error(message: str) -> None:
     try:
         ctypes.windll.user32.MessageBoxW(
             0,
-            f"Failed to launch Chromium.\n\n{message}",
-            "Chromium Launcher",
+            f"{headline}.\n\n{message}",
+            "Chromium-Py-Updater",
             MB_OK | MB_ICONERROR,
         )
     except Exception:
         pass
-    console(f"Failed to launch Chromium: {message}", stream=sys.stderr)
+    console(f"{headline}: {message}", stream=sys.stderr)
 
 CONFIG_COMMENT = """\
   // Supported placeholders:
@@ -331,46 +329,32 @@ def remove_old_archives(keep_name: str) -> None:
         part.unlink(missing_ok=True)
 
 
-# Takes no arguments on purpose: nothing of ours is interpolated into the
-# script, so no path can alter it. The matching happens in Python instead.
-PS_RUNNING_PATHS = r"""
-Get-CimInstance Win32_Process |
-    Where-Object { $_.Name -match '^(chrome|chromium)\.exe$' -and $_.ExecutablePath } |
-    ForEach-Object { $_.ExecutablePath }
-"""
+GENERIC_WRITE = 0x40000000
+FILE_SHARE_ALL = 0x07
+OPEN_EXISTING = 3
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+ERROR_SHARING_VIOLATION = 32
 
 
 def is_chromium_running(chrome_exe: Path) -> bool:
-    try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", PS_RUNNING_PATHS],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as e:
-        # Assume it is closed; a locked file fails the extraction anyway, and
-        # that path now falls back to launching what is installed.
-        log(f"Could not check for a running Chromium: {e}")
-        return False
+    # Windows refuses write access to the program file of a running process,
+    # so this is instant and only matches our own build. Nothing is written.
+    # Called directly because Python reports a read-only file the same way.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
 
-    target = str(chrome_exe.resolve()).lower()
-    return any(line.strip().lower() == target for line in result.stdout.splitlines())
-
-
-def ask_update_while_running() -> bool:
-    message = (
-        "Chromium is still running.\n\n"
-        "Yes = skip the update and launch the current version\n"
-        "No = cancel"
+    handle = kernel32.CreateFileW(
+        str(chrome_exe), GENERIC_WRITE, FILE_SHARE_ALL, None, OPEN_EXISTING, 0, None
     )
-    result = ctypes.windll.user32.MessageBoxW(
-        0,
-        message,
-        "Chromium Update",
-        MB_YESNO | MB_ICONQUESTION,
-    )
-    return result == IDYES
+    if handle == INVALID_HANDLE_VALUE:
+        return ctypes.get_last_error() == ERROR_SHARING_VIOLATION
+    kernel32.CloseHandle(handle)
+    return False
 
 
 SYSTEM_TAR = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tar.exe"
@@ -496,11 +480,8 @@ def fetch_latest_asset() -> dict:
     return asset
 
 
-def update_to_latest() -> bool:
-    """Install the latest release unless it is already in place.
-
-    Returns False if the user chose to cancel instead of updating.
-    """
+def update_to_latest() -> None:
+    """Install the latest release unless it is already in place."""
     asset = fetch_latest_asset()
     asset_name = asset["name"]
     archive = DOWNLOAD_DIR / asset_name
@@ -508,7 +489,7 @@ def update_to_latest() -> bool:
 
     if read_text_file(VERSION_FILE) == asset_name and chrome_exe.exists():
         log(f"Already up to date: {asset_name}")
-        return True
+        return
 
     if archive.exists():
         log(f"Already downloaded: {asset_name}")
@@ -521,14 +502,11 @@ def update_to_latest() -> bool:
 
     remove_old_archives(asset_name)
 
+    # Checked again: Chromium may have been started during the download. The
+    # version file stays untouched, so the update is retried next time.
     if chrome_exe.exists() and is_chromium_running(chrome_exe):
-        log("An update is pending while Chromium is running")
-        if not ask_update_while_running():
-            log("User cancelled because Chromium is still running")
-            return False
-        # The version file stays untouched, so the update is retried next time.
-        log("User chose to skip the update and launch the current version")
-        return True
+        log("Chromium was started meanwhile, the update waits for the next start")
+        return
 
     try:
         extract_flat(archive, EXTRACT_DIR)
@@ -541,28 +519,131 @@ def update_to_latest() -> bool:
     # was downloaded.
     VERSION_FILE.write_text(asset_name, encoding="utf-8")
     log(f"Installed {asset_name}")
-    return True
+
+
+APP_ID = "ChromiumLauncher"
+APP_NAME = "Chromium-Py-Updater"
+PROG_ID = "ChromiumLauncherHTML"
+APP_KEY = rf"Software\Clients\StartMenuInternet\{APP_ID}"
+PROG_KEY = rf"Software\Classes\{PROG_ID}"
+REGISTERED_APPS_KEY = r"Software\RegisteredApplications"
+URL_SCHEMES = ("http", "https")
+FILE_TYPES = (".htm", ".html", ".xhtml", ".pdf")
+
+SHCNE_ASSOCCHANGED = 0x08000000
+
+
+def set_reg_value(path: str, name: str, value: str) -> None:
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, path) as key:
+        winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+
+
+def delete_reg_tree(path: str) -> None:
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            subkeys = []
+            while True:
+                try:
+                    subkeys.append(winreg.EnumKey(key, len(subkeys)))
+                except OSError:
+                    break
+    except FileNotFoundError:
+        return
+    for subkey in subkeys:
+        delete_reg_tree(rf"{path}\{subkey}")
+    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+
+
+def register() -> None:
+    """Offer the launcher as a browser in Windows' Default apps settings.
+
+    Windows lets only the user pick the default browser, so this registers it
+    for the current user and then opens the settings page to choose it.
+    """
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.exists():
+        pythonw = Path(sys.executable)
+    # "--" ends Chromium's switch parsing, so a crafted link cannot smuggle
+    # in a command line switch.
+    command = f'"{pythonw}" "{Path(__file__).resolve()}" -- "%1"'
+    icon = f"{EXTRACT_DIR / 'chrome.exe'},0"
+    capabilities = rf"{APP_KEY}\Capabilities"
+
+    set_reg_value(PROG_KEY, "", "Chromium HTML Document")
+    set_reg_value(rf"{PROG_KEY}\DefaultIcon", "", icon)
+    set_reg_value(rf"{PROG_KEY}\shell\open\command", "", command)
+    # Without this, Windows names the handler after pythonw.exe: "Python".
+    set_reg_value(rf"{PROG_KEY}\Application", "ApplicationName", APP_NAME)
+    set_reg_value(rf"{PROG_KEY}\Application", "ApplicationIcon", icon)
+
+    set_reg_value(APP_KEY, "", APP_NAME)
+    set_reg_value(capabilities, "ApplicationName", APP_NAME)
+    set_reg_value(capabilities, "ApplicationDescription", "Keeps a portable Chromium up to date")
+    set_reg_value(capabilities, "ApplicationIcon", icon)
+    for scheme in URL_SCHEMES:
+        set_reg_value(rf"{capabilities}\URLAssociations", scheme, PROG_ID)
+    for file_type in FILE_TYPES:
+        set_reg_value(rf"{capabilities}\FileAssociations", file_type, PROG_ID)
+    set_reg_value(REGISTERED_APPS_KEY, APP_ID, capabilities)
+
+    ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, 0, None, None)
+    log(f"Registered as a browser: {command}")
+    os.startfile(f"ms-settings:defaultapps?registeredAppUser={APP_ID}")
+
+
+def unregister() -> None:
+    delete_reg_tree(APP_KEY)
+    delete_reg_tree(PROG_KEY)
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, REGISTERED_APPS_KEY, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.DeleteValue(key, APP_ID)
+    except FileNotFoundError:
+        pass
+
+    ctypes.windll.shell32.SHChangeNotify(SHCNE_ASSOCCHANGED, 0, None, None)
+    log("Removed the browser registration")
+
+
+def opens_link(args: list[str]) -> bool:
+    """True when started with a URL or file, as opposed to switches only."""
+    return any(not arg.startswith("-") for arg in args)
 
 
 def main() -> None:
+    args = sys.argv[1:]
+    if args in (["--register"], ["--unregister"]):
+        try:
+            register() if args == ["--register"] else unregister()
+        except Exception as e:
+            show_error(str(e), "Failed to change the browser registration")
+            sys.exit(1)
+        return
+
     ensure_dir(DOWNLOAD_DIR)
     ensure_dir(PROFILE_DIR)
 
     chrome_exe = EXTRACT_DIR / "chrome.exe"
 
-    try:
-        if not update_to_latest():
-            return
-    except UpdateError as e:
-        # An update problem must never stand between the user and the browser.
-        if not chrome_exe.exists():
-            raise RuntimeError(f"{e}, and no Chromium is installed") from e
-        log(f"{e} - launching the installed version")
+    # A link should open right away; the next plain start does the update.
+    if chrome_exe.exists() and opens_link(args):
+        log("Opening a link, skipping the update check")
+    elif chrome_exe.exists() and is_chromium_running(chrome_exe):
+        log("Chromium is running, skipping the update check")
+    else:
+        try:
+            update_to_latest()
+        except UpdateError as e:
+            # An update problem must never stand between the user and the browser.
+            if not chrome_exe.exists():
+                raise RuntimeError(f"{e}, and no Chromium is installed") from e
+            log(f"{e} - launching the installed version")
 
     if not chrome_exe.exists():
         raise RuntimeError(f"chrome.exe not found in {EXTRACT_DIR}")
 
-    launch_chromium(chrome_exe, sys.argv[1:])
+    launch_chromium(chrome_exe, args)
 
 
 if __name__ == "__main__":
