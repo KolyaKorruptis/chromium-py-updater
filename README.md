@@ -12,7 +12,7 @@ On each start it asks GitHub for the latest Chromium release in the configured r
 
 ## Usage
 
-Once Python is installed just double click `Chromium.py` script.
+First install [Python](https://www.python.org/downloads/windows/) then just double click `Chromium.py` script.
 
 You can also run it with arguments. These are forwarded to Chromium after the configured ones, so `python Chromium.py --incognito https://example.com` works as you'd expect.
 
