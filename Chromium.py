@@ -789,6 +789,9 @@ def write_installed(release: Release, bundled_widevine: bool) -> None:
         "asset": release.name,
         "version": release.version,
         "bundled_widevine": bundled_widevine,
+        # The configured build at the time: if it differs from repo, this
+        # release is a fallback standing in for it.
+        "tracked": REPO,
     }
     VERSION_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -1000,12 +1003,13 @@ class BuildPicker:
 
         frame = ttk.Frame(root, padding=16)
         frame.grid(sticky="nsew")
-        wrap = 560
+        wrap = 600
 
         ttk.Label(frame, text=spec["headline"], font=headline_font).grid(sticky="w")
         ttk.Label(frame, text=spec["intro"], wraplength=wrap, justify="left").grid(
             sticky="w", pady=(6, 12)
         )
+        frame.columnconfigure(0, minsize=wrap)
 
         self.choice = tk.IntVar(value=-1 if spec["preselect"] is None else spec["preselect"])
         style = ttk.Style(root)
@@ -1046,10 +1050,17 @@ class BuildPicker:
         if spec["faq_url"]:
             faq = ttk.Frame(frame, padding=(0, 10, 0, 0))
             faq.grid(sticky="ew")
-            ttk.Label(faq, text="Adding Widevine by hand:").grid(row=0, column=0, sticky="w")
-            url = tk.StringVar(value=spec["faq_url"])
-            entry = ttk.Entry(faq, textvariable=url, width=70, state="readonly")
-            entry.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+            faq.columnconfigure(0, weight=1)
+            ttk.Label(faq, text="Adding Widevine by hand:").grid(
+                row=0, column=0, columnspan=2, sticky="w"
+            )
+            # Kept on self: tkinter empties the field once the variable is gone.
+            self.faq_url = tk.StringVar(value=spec["faq_url"])
+            ttk.Entry(faq, textvariable=self.faq_url, width=1, state="readonly").grid(
+                row=1, column=0, sticky="ew", pady=(2, 0)
+            )
+            self.copy_button = ttk.Button(faq, text="Copy link", command=self.copy_faq_url)
+            self.copy_button.grid(row=1, column=1, padx=(8, 0), pady=(2, 0))
 
         buttons = ttk.Frame(frame, padding=(0, 16, 0, 0))
         buttons.grid(sticky="e")
@@ -1069,6 +1080,11 @@ class BuildPicker:
         root.attributes("-topmost", True)
         root.after(300, lambda: root.attributes("-topmost", False))
         root.focus_force()
+
+    def copy_faq_url(self) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.spec["faq_url"])
+        self.copy_button.configure(text="Copied")
 
     def ok(self) -> None:
         if self.choice.get() >= 0:
@@ -1189,9 +1205,12 @@ def choose_release(original: Release, installed: dict | None, state: dict) -> Re
     versions behind Chrome stable.
     """
     name = display_name(REPO)
+    # Only a release installed as a stand-in for the configured build counts;
+    # after a change in config.jsonc the new build is simply installed.
     on_fallback = (
         installed is not None
         and not same_repo(installed.get("repo"), REPO)
+        and same_repo(installed.get("tracked"), REPO)
         and known_build(installed.get("repo")) is not None
     )
 
@@ -1208,7 +1227,7 @@ def choose_release(original: Release, installed: dict | None, state: dict) -> Re
 
     if freshness(original.major, stable) != "outdated":
         if on_fallback:
-            log(f"{name} {original.version} has caught up, switching back to it")
+            log(f"{name} {original.version} is recent enough again, switching back to it")
         return original
 
     gap = stable - original.major
@@ -1217,22 +1236,27 @@ def choose_release(original: Release, installed: dict | None, state: dict) -> Re
 
     if on_fallback and not current_fallback:
         # GitHub didn't answer for the fallback: stay with what is installed.
+        if not (EXTRACT_DIR / "chrome.exe").exists():
+            raise UpdateError(f"Could not check {display_name(installed['repo'])}")
         return Release(installed["repo"], {"name": installed["asset"]}, installed.get("version"))
 
     if current_fallback and freshness(current_fallback.major, stable) != "outdated":
         log(f"Using {display_name(current_fallback.repo)} until {name} catches up")
         return current_fallback
 
+    # Remembered by the version known before the scan, which is what the
+    # next start sees at this point too.
     if state.get("declined_for_stable") == stable:
         log(f"No fallback wanted for Chrome {stable}, keeping {display_name(keep.repo)}")
         return keep
+    declined_key = stable
 
     candidates = [r for r in scan_builds(state) if not same_repo(r.repo, REPO)]
     stable = effective_stable(state, [original.major, *[r.major for r in candidates]])
     choice = pick_build(picker_spec("fallback", candidates, stable, original))
     if choice is None:
         log(f"No fallback build chosen, keeping {display_name(keep.repo)}")
-        state["declined_for_stable"] = stable
+        state["declined_for_stable"] = declined_key
         save_state(state)
         return keep
 

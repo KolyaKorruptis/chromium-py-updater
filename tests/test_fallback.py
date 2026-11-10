@@ -354,6 +354,35 @@ class Fallback(FallbackTestCase):
         self.assertEqual(self.picks, [])
         self.assertEqual(self.installed()["repo"], UNGOOGLED)
 
+    def test_config_change_is_not_taken_for_a_fallback(self):
+        self.m.set_tracked_build(self.m.Release(HIBBIKI, {}, None))
+        self.make_marmaduke_outdated()
+        self.start()
+        self.assertEqual(self.picks, [])
+        self.assertEqual(self.installed()["repo"], HIBBIKI)
+        self.assertEqual(self.installed()["tracked"], HIBBIKI)
+
+    def test_decline_holds_when_the_scan_raises_stable(self):
+        # Chrome for Testing says 158, Hibbiki is already out as 159.
+        self.make_marmaduke_outdated()
+        self.net.add(HIBBIKI, "159.0.8144.1", "chrome.7z")
+        self.answer = None
+        self.start()
+        self.assertEqual(len(self.picks), 1)
+        self.assertIn("Chrome 159", self.picks[0]["intro"])
+        self.start()
+        self.assertEqual(len(self.picks), 1)
+
+    def test_fallback_unreachable_and_bin_gone(self):
+        self.make_marmaduke_outdated()
+        self.answer = self.pick_repo(UNGOOGLED)
+        self.start()
+        shutil.rmtree(self.dir / "bin")
+        self.net.down.add(UNGOOGLED.lower())
+        self.answer = None
+        with self.assertUpdateError():
+            self.m.update_to_latest()
+
     def test_outdated_fallback_asks_again(self):
         self.make_marmaduke_outdated()
         self.answer = self.pick_repo(UNGOOGLED)
@@ -434,6 +463,50 @@ class Checksums(FallbackTestCase):
         self.answer = self.pick_repo(MARMADUKE)
         self.start()
         self.assertEqual(self.installed()["repo"], MARMADUKE)
+
+
+class ConsolePicker(FallbackTestCase):
+    def spec(self):
+        m = self.m
+        R = m.Release
+        releases = [
+            R(UNGOOGLED, {"name": "a"}, "157.0.8103.38"),
+            R(HIBBIKI, {"name": "b"}, "157.0.8103.39"),
+            R(SUPERMIUM, {"name": "c"}, "150.0.7871.255"),
+        ]
+        return m.picker_spec("fallback", releases, 158, R(MARMADUKE, {"name": "d"}, "156.0.8078.84"))
+
+    def run_console(self, answers):
+        import builtins
+        answers = iter(answers)
+        original = builtins.input
+        builtins.input = lambda prompt="": next(answers)
+        try:
+            return self.m.pick_in_console(self.spec())
+        finally:
+            builtins.input = original
+
+    def test_enter_takes_the_preselected_build(self):
+        self.assertEqual(self.run_console([""]), 0)
+
+    def test_outdated_and_invalid_answers_are_asked_again(self):
+        self.assertEqual(self.run_console(["3", "x", "9", "2"]), 1)
+
+    def test_n_declines(self):
+        self.assertIsNone(self.run_console(["n"]))
+
+    def test_window_failure_falls_back_to_console(self):
+        m = self.m
+
+        def broken(spec):
+            raise RuntimeError("no display")
+
+        m.pick_with_window = broken
+        m.console_is_interactive = lambda: True
+        m.pick_in_console = lambda spec: 1
+        self.assertEqual(m.pick_build(self.spec()).repo, HIBBIKI)
+        m.console_is_interactive = lambda: False
+        self.assertIsNone(m.pick_build(self.spec()))
 
 
 if __name__ == "__main__":
