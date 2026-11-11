@@ -43,6 +43,7 @@ class FakeNet:
         self.releases: dict[str, dict] = {}
         self.files: dict[str, bytes] = {}
         self.calls: list[str] = []
+        self.downloads: list[str] = []
         self.down: set[str] = set()
 
     def add(self, repo: str, version: str, asset_name: str, data: bytes | None = None,
@@ -72,6 +73,7 @@ class FakeNet:
         return self.releases[repo]
 
     def download(self, url: str, dest: Path) -> None:
+        self.downloads.append(url)
         dest.write_bytes(self.files[url])
 
     def github_calls(self) -> int:
@@ -463,6 +465,55 @@ class Checksums(FallbackTestCase):
         self.answer = self.pick_repo(MARMADUKE)
         self.start()
         self.assertEqual(self.installed()["repo"], MARMADUKE)
+
+
+class ArchiveNames(FallbackTestCase):
+    def test_hibbiki_updates_although_the_file_name_stays(self):
+        self.default_builds()
+        self.answer = self.pick_repo(HIBBIKI)
+        self.start()
+        self.assertEqual(self.installed()["version"], "157.0.8103.39")
+        self.assertTrue((self.dir / "download" / "157.0.8103.39_chrome.7z").exists())
+
+        self.net.add(HIBBIKI, "157.0.8103.50", "chrome.7z", data=make_archive(marker="new"),
+                     tag="v157.0.8103.50-r1717400")
+        self.start()
+        self.assertEqual(self.installed()["version"], "157.0.8103.50")
+        self.assertIn("new", (self.dir / "bin" / "chrome.exe").read_text())
+        self.assertEqual(sorted(p.name for p in (self.dir / "download").iterdir()),
+                         ["157.0.8103.50_chrome.7z"])
+
+    def test_old_version_file_with_a_generic_name_reinstalls_once(self):
+        self.default_builds()
+        (self.dir / "config.jsonc").write_text(
+            '{"repo": "Hibbiki/chromium-win64", "asset_suffix": "chrome.7z"}', encoding="utf-8")
+        (self.dir / "bin").mkdir()
+        (self.dir / "bin" / "chrome.exe").write_text("old")
+        (self.dir / "latest.txt").write_text("chrome.7z", encoding="utf-8")
+        self.start()
+        self.assertEqual(self.installed()["version"], "157.0.8103.39")
+        self.assertEqual(len(self.net.downloads), 1)
+        self.start()  # and then it is up to date
+        self.assertEqual(len(self.net.downloads), 1)
+
+    def test_supermium_layout(self):
+        self.default_builds()
+        self.net.add(SUPERMIUM, "158.0.1.1", "supermium_158_64_nonsetup.zip", data=self._supermium_zip())
+        self.answer = self.pick_repo(SUPERMIUM)
+        self.start()
+        bin_dir = self.dir / "bin"
+        self.assertTrue((bin_dir / "chrome.exe").exists())
+        self.assertFalse((bin_dir / "setup.exe").exists())
+
+    @staticmethod
+    def _supermium_zip() -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("setup.exe", "installer")
+            zf.writestr("NotoEmoji.ttf", "font")
+            zf.writestr("Supermium/chrome.exe", "exe")
+            zf.writestr("Supermium/150.0.7871.255/chrome.dll", "dll")
+        return buf.getvalue()
 
 
 class ConsolePicker(FallbackTestCase):

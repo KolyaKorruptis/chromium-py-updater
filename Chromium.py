@@ -438,16 +438,22 @@ WIDEVINE_DIR = "WidevineCdm"
 
 
 def find_build_root(path: Path) -> Path:
-    """Step into single top-level folders until chrome.exe is in sight.
+    """The folder of the shallowest chrome.exe, a few levels deep at most.
 
-    Most archives wrap the build in one folder; some nest it deeper.
+    Most archives wrap the build in one folder; some nest it deeper or put
+    extras beside it (Supermium ships setup.exe and a font next to its
+    folder). Without any chrome.exe, single top-level folders are stepped
+    into as before.
     """
-    while not (path / "chrome.exe").exists():
+    for depth in range(4):
+        found = sorted(path.glob("/".join(["*"] * depth + ["chrome.exe"])))
+        if found:
+            return found[0].parent
+    while True:
         items = list(path.iterdir())
         if len(items) != 1 or not items[0].is_dir():
-            break
+            return path
         path = items[0]
-    return path
 
 
 def extract_flat(archive: Path, extract_dir: Path, keep_widevine: bool = False) -> bool:
@@ -807,19 +813,39 @@ def widevine_was_added_by_hand(installed: dict | None) -> bool:
     return not bundled
 
 
+def local_archive_name(release: Release) -> str:
+    """The file name on disk. Hibbiki calls every release chrome.7z, so a
+    name without the version gets it put in front."""
+    if release.version and release.version not in release.name:
+        return f"{release.version}_{release.name}"
+    return release.name
+
+
+def is_installed(release: Release, installed: dict | None) -> bool:
+    if not installed or not (EXTRACT_DIR / "chrome.exe").exists():
+        return False
+    if installed.get("asset") != release.name:
+        return False
+    if not same_repo(installed.get("repo"), release.repo):
+        return False
+    # Same file name, but maybe a newer release (e.g. chrome.7z).
+    old, new = installed.get("version"), release.version
+    if new is None:
+        return True
+    if old is None:
+        # An old-style version file: only the name, which may not tell.
+        return new in release.name
+    return old == new
+
+
 def install(release: Release, installed: dict | None) -> None:
     """Install release unless it is already in place."""
-    asset_name = release.name
+    asset_name = local_archive_name(release)
     archive = DOWNLOAD_DIR / asset_name
     chrome_exe = EXTRACT_DIR / "chrome.exe"
     digest = release.asset.get("digest")
 
-    if (
-        installed
-        and installed.get("asset") == asset_name
-        and same_repo(installed.get("repo"), release.repo)
-        and chrome_exe.exists()
-    ):
+    if is_installed(release, installed):
         log(f"Already up to date: {asset_name}")
         return
 
