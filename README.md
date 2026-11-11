@@ -82,7 +82,7 @@ To switch to another build at any time, just double click `choose-build.bat` (or
 
 You can also run Chromium-Py-Updater with arguments. These are forwarded to Chromium after the configured ones, so `python Chromium.py --incognito https://example.com` works as you'd expect.
 
-To add Widevine (for DRM-protected video) to ungoogled-chromium, see the [ungoogled-chromium FAQ](https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/faq.md#how-do-i-install-widevine-cdm). A `WidevineCdm` folder that you place in `bin/` is kept on updates and build changes.
+To add Widevine (for DRM-protected video) to ungoogled-chromium, see the [ungoogled-chromium FAQ](https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/faq.md#how-do-i-install-widevine-cdm). A `WidevineCdm` folder that you place in `bin/` is kept on updates and build changes. If you switch to a build that ships its own Widevine, your copy is moved to `WidevineCdm.kept` next to `Chromium.py`. It goes back into `bin/` if you switch to a build without Widevine later.
 
 ## Tests
 
