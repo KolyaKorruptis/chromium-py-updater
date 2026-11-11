@@ -15,7 +15,8 @@ If your build falls two or more major versions behind, it will inform you and of
 ## Usage
 
 1. Install [Python](https://www.python.org/downloads/windows/)
-2. Double click `Chromium.py`
+2. Download [chromium-py-updater.zip](https://github.com/KolyaKorruptis/chromium-py-updater/releases/latest/download/chromium-py-updater.zip) and extract it to a folder of your choice
+3. Double click `Chromium.py`
 
 ## Portable
 

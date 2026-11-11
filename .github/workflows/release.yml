@@ -1,0 +1,22 @@
+name: Release zip
+
+# Attaches chromium-py-updater.zip to every published release, so the README
+# can link to releases/latest/download/chromium-py-updater.zip.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # git archive honours export-ignore and eol=crlf from .gitattributes
+      - run: git archive --format=zip -o chromium-py-updater.zip HEAD
+      - run: gh release upload "$TAG" chromium-py-updater.zip --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
