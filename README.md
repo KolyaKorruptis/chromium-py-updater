@@ -37,7 +37,7 @@ All files live in the work directory next to `Chromium.py`:
 
 ## Configuration
 
-On its first run the script creates its default configuration in `config.jsonc`. After that the only lines Chromium-Py-Updater will update are `repo` and `asset_suffix`, when you select a new build. Any key you remove falls back to its built-in default. Delete `config.jsonc` to get a fresh copy of the defaults.
+On its first run Chromium-Py-Updater creates its default configuration in `config.jsonc`. After that the only lines it will update are `repo` and `asset_suffix`, when you select a new build. Any key you remove from the config falls back to its built-in default. Delete `config.jsonc` to get a fresh copy of the defaults.
 
 Edit `config.jsonc` to your liking, for example:
 
