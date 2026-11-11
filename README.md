@@ -9,12 +9,14 @@ If your build falls two or more major versions behind Chrome stable, Chromium-Py
 ## Requirements
 
 - Windows
-- Python 3.10 or newer (standard library, including tkinter, which the Windows installer includes by default)
+- Python 3.10 or newer (standard library only)
 - For `.7z` releases: Windows 11, or 7-Zip installed
 
 ## Usage
 
-First install [Python](https://www.python.org/downloads/windows/) then just double click `Chromium.py` script. On the first start it asks which Chromium build you want, then downloads it.
+First install [Python](https://www.python.org/downloads/windows/), then double click `Chromium.py`. On the first start it lists the Chromium builds it knows in the console window: choose one with the arrow keys and press Enter to download it, or press Esc to quit without installing anything.
+
+To switch to another build later, double click `choose-build.bat` (or run `python Chromium.py --choose-build`). To track a build that isn't in the list, set `repo` and `asset_suffix` in `config.jsonc`, see [Configuration](#configuration).
 
 You can also run it with arguments. These are forwarded to Chromium after the configured ones, so `python Chromium.py --incognito https://example.com` works as you'd expect.
 
@@ -22,17 +24,18 @@ You can also run it with arguments. These are forwarded to Chromium after the co
 
 All files live in the work directory next to `Chromium.py`:
 
-| Path           | Contents                                                  |
-| -------------- | --------------------------------------------------------- |
-| `download/`    | the downloaded release archive (older ones are pruned)    |
-| `bin/`         | the extracted Chromium build                              |
-| `profile/`     | your browser profile                                      |
-| `temp/`        | disk cache, crash dumps                                   |
-| `latest.txt`   | which build and release is installed                      |
-| `fallback.json` | cached Chrome stable version and build list              |
-| `launch.log`   | timestamped log of each run                               |
-| `config.jsonc` | generated on first run; yours to edit                     |
-| `register.bat` | register Chromium-Py-Updater as your default browser      |
+| Path               | Contents                                               |
+| ------------------ | ------------------------------------------------------ |
+| `download/`        | the downloaded release archive (older ones are pruned) |
+| `bin/`             | the extracted Chromium build                           |
+| `profile/`         | your browser profile                                   |
+| `temp/`            | disk cache, crash dumps                                |
+| `latest.txt`       | which build and release is installed                   |
+| `fallback.json`    | cached Chrome stable version and build list            |
+| `launch.log`       | timestamped log of each run                            |
+| `config.jsonc`     | generated on first run; yours to edit                  |
+| `register.bat`     | register Chromium-Py-Updater as your default browser   |
+| `choose-build.bat` | switch to another Chromium build                       |
 
 ## Configuration
 
@@ -76,7 +79,7 @@ From a terminal, `python Chromium.py --register` and `--unregister` do the same.
 
 Volunteer-maintained builds sometimes fall behind Chrome stable for a while, and in that time they miss security fixes. On every start Chromium-Py-Updater compares your build with Chrome stable. Chrome stable comes from [Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/) and is looked up at most once an hour.
 
-When your build is two or more major versions behind, a window offers these builds instead:
+When your build is two or more major versions behind, Chromium-Py-Updater offers these builds instead:
 
 | Build | Google | Codecs | HEVC | Widevine |
 | --- | --- | --- | --- | --- |
@@ -85,17 +88,17 @@ When your build is two or more major versions behind, a window offers these buil
 | [Hibbiki](https://github.com/Hibbiki/chromium-win64) | sync | yes | yes | yes |
 | [Supermium](https://github.com/win32ss/supermium) | sync | yes | no | no |
 
-Builds that are themselves two or more versions behind can't be chosen. The window points out what you give up compared with your build, such as Google sync instead of ungoogled, or no Widevine.
+Builds that are themselves two or more versions behind can't be chosen. The list points out what you give up compared with your build, such as Google sync instead of ungoogled, or no Widevine.
 
-The build you pick is used until yours is no more than one version behind again. Then Chromium-Py-Updater switches back by itself. If you keep your build instead, you're asked again when the next Chrome version comes out. Your choice in `config.jsonc` is never changed by this; only the first-start choice is saved there.
+The build you pick is used until yours is no more than one version behind again. Then Chromium-Py-Updater switches back by itself. If you keep your build instead, you're asked again when the next Chrome version comes out. Your choice in `config.jsonc` is never changed by this; only a build you choose on the first start or with `choose-build.bat` is saved there.
 
-ungoogled-chromium doesn't come with Widevine, the module needed for DRM-protected video. You can add it yourself, see the [ungoogled-chromium FAQ](https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/faq.md#how-do-i-install-widevine-cdm). A `WidevineCdm` folder you added to `bin/` is kept when the build is updated.
+To add Widevine (needed for DRM-protected video) to ungoogled-chromium, see the [ungoogled-chromium FAQ](https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/faq.md#how-do-i-install-widevine-cdm); a `WidevineCdm` folder you put in `bin/` is kept on updates.
 
 ## Good to know
 
 **Updates only happen on a plain start.** When you open a link, or Chromium is already running, Chromium-Py-Updater skips the update check and starts right away. The update is applied the next time you start it on its own with Chromium closed.
 
-**If GitHub can't be reached**, Chromium-Py-Updater starts the version you already have, so Github being down never leaves you without a browser. The reason is recorded in `launch.log`.
+**If GitHub can't be reached**, Chromium-Py-Updater starts the version you already have, so GitHub being down never leaves you without a browser. The reason is recorded in `launch.log`.
 
 **You can find reliable build repositories** on https://chromiumbuilds.org/windows/
 

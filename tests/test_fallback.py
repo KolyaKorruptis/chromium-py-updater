@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -111,21 +112,25 @@ class FallbackTestCase(unittest.TestCase):
                 return self.answer(spec)
             return self.answer
 
-        module.pick_with_window = fake_pick
+        self.real_show_picker = module.show_picker
+        module.show_picker = fake_pick
         self.m = module
         return module
 
-    def start(self) -> None:
-        """A plain start of the launcher: the real main(), minus the launch."""
+    def start(self, *args: str, running: bool = False) -> None:
+        """A start of the launcher: the real main(), minus the launch."""
         m = self.load()
         self.launched = False
+        self.errors: list[str] = []
 
         def launch(exe, args):
             self.launched = True
 
         m.launch_chromium = launch
+        m.is_chromium_running = lambda exe: running
+        m.show_error = lambda message, headline="": self.errors.append(message)
         argv = sys.argv
-        sys.argv = ["Chromium.py"]
+        sys.argv = ["Chromium.py", *args]
         try:
             m.main()
         finally:
@@ -225,7 +230,7 @@ class FirstRun(FallbackTestCase):
         self.assertEqual(names, [MARMADUKE, UNGOOGLED, HIBBIKI, SUPERMIUM])
         self.assertEqual(spec["preselect"], 0)
         self.assertFalse(spec["options"][3]["enabled"], "Supermium 150 is outdated")
-        self.assertEqual(spec["faq_url"], self.m.WIDEVINE_FAQ_URL)
+        self.assertIn("Widevine can be added by hand, see the README", spec["options"][1]["notes"])
 
         self.assertEqual(self.installed()["repo"], HIBBIKI)
         self.assertTrue((self.dir / "bin" / "chrome.exe").exists(), "two nested folders flattened")
@@ -238,11 +243,21 @@ class FirstRun(FallbackTestCase):
         self.start()
         self.assertEqual(self.picks, [], "no picker once a build is installed")
 
-    def test_closing_the_first_picker_keeps_the_configured_build(self):
+    def test_closing_the_first_picker_installs_nothing(self):
         self.default_builds()
         self.answer = None
         self.start()
+        self.assertFalse(self.launched)
+        self.assertFalse((self.dir / "latest.txt").exists())
+        self.assertFalse((self.dir / "bin" / "chrome.exe").exists())
+        self.assertEqual(self.net.downloads, [])
+        self.assertEqual(self.picks[0]["cancel_label"], "Quit without installing")
+
+        self.answer = self.pick_repo(MARMADUKE)
+        self.start()
+        self.assertEqual(len(self.picks), 2, "asked again on the next start")
         self.assertEqual(self.installed()["repo"], MARMADUKE)
+        self.assertTrue(self.launched)
 
     def test_offline_first_run_skips_picker(self):
         self.default_builds()
@@ -254,7 +269,7 @@ class FirstRun(FallbackTestCase):
     def test_one_picker_per_start_on_first_run(self):
         self.default_builds()
         self.net.stable = 158  # the default, Marmaduke 156, is outdated
-        self.answer = None
+        self.answer = self.pick_repo(UNGOOGLED)
         self.start()
         self.assertEqual(len(self.picks), 1)
         self.assertEqual(self.picks[0]["headline"], "Choose a Chromium build")
@@ -638,20 +653,173 @@ class ConsolePicker(FallbackTestCase):
     def test_n_declines(self):
         self.assertIsNone(self.run_console(["n"]))
 
-    def test_window_failure_falls_back_to_console(self):
+    def test_picker_ways(self):
         m = self.m
+        m.show_picker = self.real_show_picker
+        shown = []
+        m.log = lambda message: None
+        m.pick_with_keys = lambda spec: shown.append("keys") or 1
+        m.pick_in_console = lambda spec: shown.append("numbers") or 1
+        m.ensure_console = lambda: True
+        m.enable_ansi = lambda: True
+        grown = []
+        m.grow_console = lambda cols, rows: grown.append((cols, rows))
+        m.console_is_ours = lambda: False
 
-        def broken(spec):
-            raise RuntimeError("no display")
+        shown_, choice = m.pick_build(self.spec())
+        self.assertEqual((shown_, choice.repo, shown), (True, HIBBIKI, ["keys"]))
+        self.assertEqual(grown, [], "a shell's console keeps its size")
 
-        m.pick_with_window = broken
-        m.console_is_interactive = lambda: True
-        m.pick_in_console = lambda spec: 1
-        shown, choice = m.pick_build(self.spec())
-        self.assertEqual((shown, choice.repo), (True, HIBBIKI))
-        m.console_is_interactive = lambda: False
-        self.assertEqual(m.pick_build(self.spec()), (False, None))
+        m.console_is_ours = lambda: True
+        m.pick_build(self.spec())
+        self.assertEqual(len(grown), 1, "our own console grows to fit the picker")
+        self.assertEqual(grown[0][0], m.PICKER_COLS)
+        self.assertGreater(grown[0][1], 20)
 
+        shown.clear()
+        m.enable_ansi = lambda: False
+        m.pick_build(self.spec())
+        self.assertEqual(shown, ["numbers"], "old console without escape sequences")
+
+        shown.clear()
+        m.ensure_console = lambda: False
+        self.assertEqual(m.pick_build(self.spec()), (False, None), "no console at all")
+        self.assertEqual(shown, [])
+
+
+class ChooseBuild(FallbackTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.default_builds(marmaduke="157.0.8103.30")
+        self.install_marmaduke()
+
+    def test_switch_to_another_build(self):
+        self.answer = self.pick_repo(HIBBIKI)
+        self.start("--choose-build")
+        spec = self.picks[0]
+        self.assertEqual(spec["cancel_label"], "Quit without changes")
+        self.assertEqual(spec["preselect"], 0, "your build is preselected")
+        self.assertTrue(spec["options"][0]["status"].endswith(", your build"))
+        hibbiki = next(o for o in spec["options"] if o["release"].repo == HIBBIKI)
+        self.assertEqual(hibbiki["warnings"], ["Less private than Marmaduke: Google sync"])
+
+        self.assertEqual(self.installed()["repo"], HIBBIKI)
+        self.assertIn('"repo": "Hibbiki/chromium-win64"', (self.dir / "config.jsonc").read_text(encoding="utf-8"))
+        self.assertTrue(self.launched)
+        self.assertEqual(self.errors, [])
+
+        self.picks.clear()
+        self.start()
+        self.assertEqual((self.picks, self.installed()["repo"]), ([], HIBBIKI), "and it stays")
+
+    def test_closing_changes_nothing(self):
+        self.answer = None
+        self.start("--choose-build")
+        self.assertEqual(self.installed()["repo"], MARMADUKE)
+        self.assertFalse(self.launched)
+        self.assertNotIn("Hibbiki", (self.dir / "config.jsonc").read_text(encoding="utf-8"))
+
+    def test_older_than_installed_is_flagged(self):
+        self.answer = None
+        self.start("--choose-build")
+        ungoogled = next(o for o in self.picks[0]["options"] if o["release"].repo == UNGOOGLED)
+        self.assertFalse([w for w in ungoogled["warnings"] if w.startswith("Older")])
+        self.net.add(UNGOOGLED, "156.0.8078.79", "ungoogled-chromium_156.0.8078.79-1.1_windows_x64.zip")
+        (self.dir / "fallback.json").unlink()
+        self.start("--choose-build")
+        ungoogled = next(o for o in self.picks[-1]["options"] if o["release"].repo == UNGOOGLED)
+        self.assertIn("Older than the installed Chromium 157: your profile may not work with it", ungoogled["warnings"])
+
+    def test_not_while_chromium_runs(self):
+        self.answer = self.pick_repo(HIBBIKI)
+        with self.assertRaises(SystemExit):
+            self.start("--choose-build", running=True)
+        self.assertEqual(self.picks, [])
+        self.assertIn("Chromium is running", self.errors[0])
+        self.assertEqual(self.installed()["repo"], MARMADUKE)
+
+    def test_offline_shows_an_error(self):
+        self.net.down |= {MARMADUKE.lower(), UNGOOGLED.lower(), HIBBIKI.lower(), SUPERMIUM.lower()}
+        (self.dir / "fallback.json").unlink()
+        with self.assertRaises(SystemExit):
+            self.start("--choose-build")
+        self.assertTrue(self.errors)
+        self.assertFalse(self.launched)
+
+
+class KeyPicker(FallbackTestCase):
+    def spec(self, mode="first"):
+        m = self.m
+        R = m.Release
+        releases = [
+            R(MARMADUKE, {"name": "d"}, "156.0.8078.84"),
+            R(UNGOOGLED, {"name": "a"}, "157.0.8103.38"),
+            R(HIBBIKI, {"name": "b"}, "157.0.8103.39"),
+            R(SUPERMIUM, {"name": "c"}, "150.0.7871.255"),
+        ]
+        if mode == "first":
+            return m.picker_spec("first", releases, 157)
+        if mode == "change":
+            return m.picker_spec("change", releases, 157)
+        return m.picker_spec("fallback", releases[1:], 158, releases[0])
+
+    def run_keys(self, keys, spec=None, size=(100, 40)):
+        out = io.StringIO()
+        keys = iter(keys)
+        result = self.m.pick_with_keys(spec or self.spec(), keys=lambda: next(keys), out=out, size=lambda: size)
+        return result, out.getvalue()
+
+    def test_enter_takes_the_preselected_build(self):
+        self.assertEqual(self.run_keys(["enter"])[0], 0)
+
+    def test_arrows_skip_builds_that_are_too_far_behind(self):
+        self.assertEqual(self.run_keys(["down", "down", "down", "down", "enter"])[0], 2)
+        self.assertEqual(self.run_keys(["end", "up", "enter"])[0], 1)
+        self.assertEqual(self.run_keys(["down", "home", "up", "enter"])[0], 0)
+
+    def test_numbers_select_and_idle_polls_are_ignored(self):
+        self.assertEqual(self.run_keys(["3", None, "4", "x", "enter"])[0], 2)
+
+    def test_escape_cancels_and_the_screen_is_restored(self):
+        result, output = self.run_keys(["cancel"])
+        self.assertIsNone(result)
+        self.assertTrue(output.endswith("\x1b[?25h\x1b[?1049l"))
+
+    def test_footer_names_the_choices(self):
+        plain = lambda text: re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+        first = plain(self.run_keys(["cancel"])[1])
+        self.assertIn("Enter  Install", first)
+        self.assertIn("Esc  Quit without installing", first)
+        fallback = plain(self.run_keys(["cancel"], self.spec("fallback"))[1])
+        self.assertIn("Enter  Use this build", fallback)
+        self.assertIn("Esc  Keep Marmaduke", fallback)
+        self.assertIn("Compared with Marmaduke, no Widevine", fallback)
+        change = plain(self.run_keys(["cancel"], self.spec("change"))[1])
+        self.assertIn("Esc  Quit without changes", change)
+
+    def test_margin_on_top_and_left(self):
+        lines = self.m.render_picker(self.spec(), 0, 100, 40)
+        self.assertEqual(lines[0], "")
+        for line in lines[1:]:
+            self.assertTrue(line == "" or line.startswith("  "), repr(line))
+
+    def test_small_window_shows_details_of_the_selected_build_only(self):
+        m = self.m
+        spec = self.spec()
+        full = m.render_picker(spec, 1, 100, 60)
+        self.assertIn("", full[6:-2], "blank lines between builds")
+        tighter = m.render_picker(spec, 1, 100, len(full))
+        self.assertEqual(len(tighter), len(full) - 3, "first the blank lines between builds go")
+        self.assertIn("Google sync", "\n".join(tighter), "other builds keep their details")
+        small = m.render_picker(spec, 1, 100, len(tighter))
+        self.assertLess(len(small), len(tighter))
+        text = "\n".join(small)
+        self.assertIn("Widevine can be added by hand", text, "selected build keeps its details")
+        self.assertNotIn("Google sync", text)
+        narrow = m.render_picker(spec, 1, 50, 40)
+        for line in narrow:
+            self.assertLessEqual(m.visible_len(line), 49)
+        self.assertIn("(7 versions behind, too far behind)", "\n".join(narrow), "status on its own line")
 
 if __name__ == "__main__":
     unittest.main()

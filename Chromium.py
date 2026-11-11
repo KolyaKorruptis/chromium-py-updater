@@ -596,10 +596,6 @@ FEATURES = (
     ("hevc", "HEVC"),
     ("widevine", "Widevine"),
 )
-WIDEVINE_FAQ_URL = (
-    "https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/"
-    "faq.md#how-do-i-install-widevine-cdm"
-)
 
 CHROME_STABLE_URL = (
     "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json"
@@ -937,12 +933,19 @@ def status_text(major: int | None, stable: int | None) -> str:
     return f"{gap} version{'s' if gap != 1 else ''} behind"
 
 
-def picker_spec(mode: str, releases: list[Release], stable: int | None, original: Release | None = None) -> dict:
+def picker_spec(
+    mode: str,
+    releases: list[Release],
+    stable: int | None,
+    original: Release | None = None,
+    installed_major: int | None = None,
+) -> dict:
     """Everything the picker shows, independent of how it is shown.
 
     mode "first": nothing is installed yet, the choice becomes the build to
-    track. mode "fallback": the tracked build is outdated, the choice is used
-    until it catches up.
+    track. mode "change": started with --choose-build, the choice replaces
+    the tracked build. mode "fallback": the tracked build is outdated, the
+    choice is used until it catches up.
     """
     base = known_build(REPO)
 
@@ -959,15 +962,23 @@ def picker_spec(mode: str, releases: list[Release], stable: int | None, original
         if build and build.get("note"):
             notes.append(build["note"])
         if build and not build["widevine"] and build.get("widevine_by_hand"):
-            notes.append("Widevine can be added by hand, see below")
+            notes.append("Widevine can be added by hand, see the README")
+        warnings = compare_builds(build, base) if mode != "first" else []
+        if installed_major and release.major and release.major < installed_major:
+            warnings.append(
+                f"Older than the installed Chromium {installed_major}: "
+                "your profile may not work with it"
+            )
         options.append(
             {
                 "release": release,
                 "title": f"{display_name(release.repo)} {release.version or ''}".strip(),
-                "status": status_text(release.major, stable),
+                "status": status_text(release.major, stable)
+                + (", your build" if mode == "change" and same_repo(release.repo, REPO) else ""),
+                "freshness": freshness(release.major, stable),
                 "enabled": freshness(release.major, stable) != "outdated",
                 "features": describe_build(build),
-                "warnings": compare_builds(build, base) if mode == "fallback" else [],
+                "warnings": warnings,
                 "notes": notes,
             }
         )
@@ -985,10 +996,18 @@ def picker_spec(mode: str, releases: list[Release], stable: int | None, original
         headline = "Choose a Chromium build"
         intro = (
             "Chromium-Py-Updater downloads the build you choose and keeps it up to "
-            "date. You can change it later in config.jsonc (repo and asset_suffix)."
+            "date. To switch builds later, double click choose-build.bat."
         )
         ok_label = "Install"
-        cancel_label = f"Use {name}"
+        cancel_label = "Quit without installing"
+    elif mode == "change":
+        headline = "Choose a Chromium build"
+        intro = (
+            f"Your build is {name}. Chromium-Py-Updater installs the build you "
+            "choose instead and keeps it up to date. Your profile stays as it is."
+        )
+        ok_label = "Install"
+        cancel_label = "Quit without changes"
     else:
         gap = stable - original.major
         headline = f"{name} is behind Chrome stable"
@@ -1008,142 +1027,7 @@ def picker_spec(mode: str, releases: list[Release], stable: int | None, original
         "preselect": preselect,
         "ok_label": ok_label,
         "cancel_label": cancel_label,
-        "faq_url": WIDEVINE_FAQ_URL
-        if any(n.startswith("Widevine can be added") for o in options for n in o["notes"])
-        else None,
     }
-
-
-class BuildPicker:
-    """The picker window. Separate from pick_build() so it can be tested."""
-
-    def __init__(self, root, spec: dict) -> None:
-        import tkinter as tk
-        from tkinter import font, ttk
-
-        self.root = root
-        self.spec = spec
-        self.result: int | None = None
-
-        root.title("Chromium-Py-Updater")
-        root.resizable(False, False)
-        root.protocol("WM_DELETE_WINDOW", self.cancel)
-        root.bind("<Escape>", lambda _e: self.cancel())
-
-        base = font.nametofont("TkDefaultFont")
-        bold = base.copy()
-        bold.configure(weight="bold")
-        headline_font = base.copy()
-        headline_font.configure(weight="bold", size=base.cget("size") + 3)
-        self._fonts = (bold, headline_font)
-
-        frame = ttk.Frame(root, padding=16)
-        frame.grid(sticky="nsew")
-        wrap = 600
-
-        ttk.Label(frame, text=spec["headline"], font=headline_font).grid(sticky="w")
-        ttk.Label(frame, text=spec["intro"], wraplength=wrap, justify="left").grid(
-            sticky="w", pady=(6, 12)
-        )
-        frame.columnconfigure(0, minsize=wrap)
-
-        self.choice = tk.IntVar(value=-1 if spec["preselect"] is None else spec["preselect"])
-        style = ttk.Style(root)
-        style.configure("Option.TRadiobutton", font=bold)
-        warn_color = "#b00020"
-        muted_color = "#555555"
-
-        for i, option in enumerate(spec["options"]):
-            box = ttk.Frame(frame, padding=(0, 4))
-            box.grid(sticky="w")
-            title = f"{option['title']}  ({option['status']})"
-            ttk.Radiobutton(
-                box,
-                text=title,
-                variable=self.choice,
-                value=i,
-                style="Option.TRadiobutton",
-                state="normal" if option["enabled"] else "disabled",
-            ).grid(sticky="w")
-            details = ttk.Frame(box, padding=(22, 0, 0, 0))
-            details.grid(sticky="w")
-            ttk.Label(details, text=option["features"], wraplength=wrap).grid(sticky="w")
-            for warning in option["warnings"]:
-                ttk.Label(
-                    details, text=warning, foreground=warn_color, wraplength=wrap
-                ).grid(sticky="w")
-            for note in option["notes"]:
-                ttk.Label(
-                    details, text=note, foreground=muted_color, wraplength=wrap
-                ).grid(sticky="w")
-            if not option["enabled"]:
-                ttk.Label(
-                    details,
-                    text="Too far behind to be offered",
-                    foreground=muted_color,
-                ).grid(sticky="w")
-
-        if spec["faq_url"]:
-            faq = ttk.Frame(frame, padding=(0, 10, 0, 0))
-            faq.grid(sticky="ew")
-            faq.columnconfigure(0, weight=1)
-            ttk.Label(faq, text="Adding Widevine by hand:").grid(
-                row=0, column=0, columnspan=2, sticky="w"
-            )
-            # Kept on self: tkinter empties the field once the variable is gone.
-            self.faq_url = tk.StringVar(value=spec["faq_url"])
-            ttk.Entry(faq, textvariable=self.faq_url, width=1, state="readonly").grid(
-                row=1, column=0, sticky="ew", pady=(2, 0)
-            )
-            self.copy_button = ttk.Button(faq, text="Copy link", command=self.copy_faq_url)
-            self.copy_button.grid(row=1, column=1, padx=(8, 0), pady=(2, 0))
-
-        buttons = ttk.Frame(frame, padding=(0, 16, 0, 0))
-        buttons.grid(sticky="e")
-        self.ok_button = ttk.Button(
-            buttons, text=spec["ok_label"], command=self.ok, default="active"
-        )
-        self.ok_button.grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(buttons, text=spec["cancel_label"], command=self.cancel).grid(
-            row=0, column=1
-        )
-        if spec["preselect"] is None:
-            self.ok_button.state(["disabled"])
-        self.choice.trace_add("write", lambda *_: self.ok_button.state(["!disabled"]))
-        root.bind("<Return>", lambda _e: self.ok())
-
-        # Started from a shortcut or link the window may open behind others.
-        root.attributes("-topmost", True)
-        root.after(300, lambda: root.attributes("-topmost", False))
-        root.focus_force()
-
-    def copy_faq_url(self) -> None:
-        self.root.clipboard_clear()
-        self.root.clipboard_append(self.spec["faq_url"])
-        self.copy_button.configure(text="Copied")
-
-    def ok(self) -> None:
-        if self.choice.get() >= 0:
-            self.result = self.choice.get()
-            self.root.destroy()
-
-    def cancel(self) -> None:
-        self.result = None
-        self.root.destroy()
-
-
-def pick_with_window(spec: dict) -> int | None:
-    import tkinter as tk
-
-    try:
-        # Sharp text on scaled displays instead of a blurry bitmap.
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        pass
-    root = tk.Tk()
-    picker = BuildPicker(root, spec)
-    root.mainloop()
-    return picker.result
 
 
 def pick_in_console(spec: dict) -> int | None:
@@ -1155,8 +1039,6 @@ def pick_in_console(spec: dict) -> int | None:
         console(f"  {i}  {option['title']} ({option['status']}){marker}")
         for line in [option["features"], *option["warnings"], *option["notes"]]:
             console(f"     {line}")
-    if spec["faq_url"]:
-        console(f"\nAdding Widevine by hand: {spec['faq_url']}")
     default = spec["preselect"]
     hint = f"Enter = {default + 1}, " if default is not None else ""
     while True:
@@ -1175,6 +1057,338 @@ def pick_in_console(spec: dict) -> int | None:
         console("Please enter one of the numbers shown.")
 
 
+def ensure_console() -> bool:
+    """Make sure there is a console to show the picker in.
+
+    Started with pythonw.exe (from a link, say) there is none, so one is
+    opened. It stays for the download progress and closes when the launcher
+    exits. Returns False when output is redirected or no console can be had.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    if not console_is_interactive():
+        if sys.stdout is not None or not kernel32.AllocConsole():
+            return False
+        try:
+            sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+            sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+            sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+    # Otherwise the title is the path of python.exe.
+    kernel32.SetConsoleTitleW(APP_NAME)
+    return True
+
+
+PYTHON_EXES = {"py.exe", "pyw.exe", "python.exe", "pythonw.exe"}
+
+
+def process_name(pid: int) -> str:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = ctypes.c_uint32(len(buf))
+        if not kernel32.QueryFullProcessImageNameW(ctypes.c_void_p(handle), 0, buf, ctypes.byref(size)):
+            return ""
+        return Path(buf.value).name.lower()
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def console_is_ours() -> bool:
+    """True when no shell shares the console: it was opened for us (double
+    click, or ensure_console()), so resizing it bothers nobody.
+
+    choose-build.bat runs in a console of its own and says so.
+    """
+    if os.environ.get("CPL_OWN_CONSOLE") == "1":
+        return True
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    pids = (ctypes.c_uint32 * 16)()
+    count = kernel32.GetConsoleProcessList(pids, len(pids))
+    if not 0 < count <= len(pids):
+        return False
+    return all(pid == os.getpid() or process_name(pid) in PYTHON_EXES for pid in pids[:count])
+
+
+class COORD(ctypes.Structure):
+    _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+
+class SMALL_RECT(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_short) for name in ("Left", "Top", "Right", "Bottom")]
+
+
+class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", COORD),
+        ("dwCursorPosition", COORD),
+        ("wAttributes", ctypes.c_ushort),
+        ("srWindow", SMALL_RECT),
+        ("dwMaximumWindowSize", COORD),
+    ]
+
+
+def grow_console(cols: int, rows: int) -> None:
+    """Make the console window at least cols x rows, as far as the screen
+    allows, and keep it on the screen.
+
+    Only works in the classic console window; Windows Terminal ignores it.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    kernel32.GetLargestConsoleWindowSize.restype = COORD
+    kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+    handle = ctypes.c_void_p(kernel32.GetStdHandle(-11))
+    info = CONSOLE_SCREEN_BUFFER_INFO()
+    if not kernel32.GetConsoleScreenBufferInfo(handle, ctypes.byref(info)):
+        return
+    window = info.srWindow
+    largest = kernel32.GetLargestConsoleWindowSize(handle)
+    cur_cols, cur_rows = window.Right - window.Left + 1, window.Bottom - window.Top + 1
+    new_cols = min(max(cur_cols, cols), largest.X or cols)
+    new_rows = min(max(cur_rows, rows), largest.Y or rows)
+    if (new_cols, new_rows) == (cur_cols, cur_rows):
+        return
+    # The buffer has to be at least as large as the window.
+    buffer = COORD(max(info.dwSize.X, new_cols), max(info.dwSize.Y, window.Top + new_rows))
+    kernel32.SetConsoleScreenBufferSize(handle, buffer)
+    rect = SMALL_RECT(0, window.Top, new_cols - 1, window.Top + new_rows - 1)
+    kernel32.SetConsoleWindowInfo(handle, True, ctypes.byref(rect))
+
+    # A taller window may now reach below the screen: move it back up.
+    hwnd = ctypes.c_void_p(kernel32.GetConsoleWindow())
+    if not hwnd:
+        return
+
+    class RECT(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_long) for name in ("left", "top", "right", "bottom")]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_uint32), ("rcMonitor", RECT), ("rcWork", RECT), ("dwFlags", ctypes.c_uint32)]
+
+    user32.MonitorFromWindow.restype = ctypes.c_void_p
+    box = RECT()
+    monitor = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+    MONITOR_DEFAULTTONEAREST = 2
+    if not user32.GetWindowRect(hwnd, ctypes.byref(box)) or not user32.GetMonitorInfoW(
+        ctypes.c_void_p(user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)), ctypes.byref(monitor)
+    ):
+        return
+    work = monitor.rcWork
+    left = max(work.left, min(box.left, work.right - (box.right - box.left)))
+    top = max(work.top, min(box.top, work.bottom - (box.bottom - box.top)))
+    if (left, top) != (box.left, box.top):
+        SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x1, 0x4, 0x10
+        user32.SetWindowPos(hwnd, None, left, top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
+
+
+def enable_ansi() -> bool:
+    """Switch the console to escape sequences (colours, cursor movement)."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    handle = ctypes.c_void_p(kernel32.GetStdHandle(-11))
+    mode = ctypes.c_uint32()
+    if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+        return False
+    ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+    return bool(kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING))
+
+
+def read_key() -> str | None:
+    """The next key as a name, or None when nothing was pressed for a moment."""
+    import msvcrt
+
+    if not msvcrt.kbhit():
+        time.sleep(0.05)
+        return None
+    key = msvcrt.getwch()
+    if key in ("\x00", "\xe0"):
+        return {"H": "up", "P": "down", "G": "home", "O": "end"}.get(msvcrt.getwch(), "")
+    return {"\r": "enter", "\x1b": "cancel", "\x03": "cancel"}.get(key, key)
+
+
+# Escape sequences for the console picker.
+RESET, BOLD, REVERSE = "\x1b[0m", "\x1b[1m", "\x1b[7m"
+ACCENT, GREEN, YELLOW, RED, GREY = "\x1b[96m", "\x1b[92m", "\x1b[93m", "\x1b[91m", "\x1b[90m"
+STATUS_COLORS = {"current": GREEN, "behind": YELLOW}
+ESCAPE_SEQUENCE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def visible_len(text: str) -> int:
+    return len(ESCAPE_SEQUENCE.sub("", text))
+
+
+def crop(text: str, width: int) -> str:
+    """Cut text to width visible characters, keeping its escape sequences."""
+    if visible_len(text) <= width:
+        return text
+    out, shown, pos = [], 0, 0
+    while pos < len(text) and shown < width:
+        match = ESCAPE_SEQUENCE.match(text, pos)
+        if match:
+            out.append(match.group())
+            pos = match.end()
+        else:
+            out.append(text[pos])
+            shown += 1
+            pos += 1
+    return "".join(out) + RESET
+
+
+# Widest picker: 100 columns of text plus the margins.
+PICKER_COLS = 103
+
+
+def render_picker(spec: dict, selected: int, cols: int, rows: int) -> list[str]:
+    """The picker's lines for a console of the given size.
+
+    When everything doesn't fit, the blank lines between builds go first,
+    then the details of all but the selected build.
+    """
+    import textwrap
+
+    # One column of margin on the left, and the last column stays free:
+    # writing into it would wrap the line.
+    width = max(20, min(cols - 2, 100))
+
+    def wrap(text: str, indent: int) -> list[str]:
+        return textwrap.wrap(text, width - indent) or [""]
+
+    def title_line(head: str, status: str) -> list[str]:
+        """Title and status on one line, or the status below when too narrow."""
+        if visible_len(head + status) + 2 <= width:
+            return [f"{head}  {status}"]
+        return [head, f"     {status}"]
+
+    def build(compact: bool, spaced: bool) -> list[str]:
+        lines = [f" {ACCENT}{BOLD}{APP_NAME}{RESET}", ""]
+        lines += [f" {BOLD}{line}{RESET}" for line in wrap(spec["headline"], 1)]
+        lines += [f" {line}" for line in wrap(spec["intro"], 1)]
+        lines.append("")
+        for i, option in enumerate(spec["options"]):
+            if i and spaced:
+                lines.append("")
+            status = option["status"]
+            if not option["enabled"]:
+                lines += title_line(
+                    f"   {GREY}○ {option['title']}", f"({status}, too far behind){RESET}"
+                )
+                if not compact:
+                    lines += [f"     {GREY}{line}{RESET}" for line in wrap(option["features"], 5)]
+                continue
+            color = STATUS_COLORS.get(option["freshness"], GREY)
+            if i == selected:
+                head = f" {ACCENT}{BOLD}► ● {option['title']}{RESET}"
+            else:
+                head = f"   ○ {option['title']}"
+            lines += title_line(head, f"{color}({status}){RESET}")
+            if compact and i != selected:
+                continue
+            lines += [f"     {line}" for line in wrap(option["features"], 5)]
+            for warning in option["warnings"]:
+                lines += [f"     {RED}{line}{RESET}" for line in wrap(warning, 5)]
+            for note in option["notes"]:
+                lines += [f"     {GREY}{line}{RESET}" for line in wrap(note, 5)]
+        lines.append("")
+        keys = [("↑↓", "Choose"), ("Enter", spec["ok_label"]), ("Esc", spec["cancel_label"])]
+        lines.append(" " + "   ".join(f"{REVERSE} {k} {RESET} {label}" for k, label in keys))
+        return lines
+
+    for compact, spaced in ((False, True), (False, False), (True, False)):
+        lines = build(compact, spaced)
+        # +1 for the top margin, and the last row stays free.
+        if len(lines) + 1 < rows:
+            break
+    # A line wider than the window would wrap and push the picker down.
+    return [""] + [" " + crop(line, width) if line else "" for line in lines]
+
+
+def console_size() -> tuple[int, int]:
+    """Columns and rows of the visible console window."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    info = CONSOLE_SCREEN_BUFFER_INFO()
+    # By the process's handle, so it also works for a console opened by
+    # ensure_console(), where Python's own stdout handle doesn't exist.
+    if kernel32.GetConsoleScreenBufferInfo(ctypes.c_void_p(kernel32.GetStdHandle(-11)), ctypes.byref(info)):
+        window = info.srWindow
+        return window.Right - window.Left + 1, window.Bottom - window.Top + 1
+    return tuple(shutil.get_terminal_size())
+
+
+def pick_with_keys(spec: dict, keys=read_key, out=None, size=console_size) -> int | None:
+    """The console picker: arrow keys choose, Enter confirms, Esc cancels."""
+    out = out or sys.stdout
+    enabled = [i for i, option in enumerate(spec["options"]) if option["enabled"]]
+    selected = spec["preselect"] if spec["preselect"] is not None else enabled[0]
+    try:
+        # Started from a link, the console may open behind other windows.
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+    # Alternate screen, cursor hidden: the picker gets the whole window, and
+    # the log lines from before are back afterwards.
+    out.write("\x1b[?1049h\x1b[?25l")
+    drawn = None
+    try:
+        while True:
+            cols, rows = size()
+            if drawn != (selected, cols, rows):
+                lines = render_picker(spec, selected, cols, rows)
+                out.write("\x1b[H" + "\n".join(line + "\x1b[K" for line in lines) + "\x1b[J")
+                out.flush()
+                drawn = (selected, cols, rows)
+            key = keys()
+            if key == "enter":
+                return selected
+            if key == "cancel":
+                return None
+            pos = enabled.index(selected)
+            if key == "up":
+                selected = enabled[max(pos - 1, 0)]
+            elif key == "down":
+                selected = enabled[min(pos + 1, len(enabled) - 1)]
+            elif key == "home":
+                selected = enabled[0]
+            elif key == "end":
+                selected = enabled[-1]
+            elif key and key.isdigit() and int(key) - 1 in enabled:
+                selected = int(key) - 1
+    finally:
+        out.write("\x1b[?25h\x1b[?1049l")
+        out.flush()
+
+
+def show_picker(spec: dict) -> int | None:
+    """Show the picker in the console, opening one if needed.
+
+    Returns the chosen option's index, or None when the user declined.
+    Raises when there is no way to show it at all.
+    """
+    if not ensure_console():
+        raise RuntimeError("no console to show it in")
+    if enable_ansi():
+        try:
+            if console_is_ours():
+                # Room for the whole picker, with blank lines between builds.
+                full = render_picker(spec, spec["preselect"] or 0, PICKER_COLS, 1000)
+                grow_console(PICKER_COLS, len(full) + 2)
+        except Exception as e:
+            log(f"Could not resize the console: {e}")
+        return pick_with_keys(spec)
+    # A console without escape sequences (Windows before 10): numbers.
+    return pick_in_console(spec)
+
+
 def pick_build(spec: dict) -> tuple[bool, Release | None]:
     """Show the picker. Returns (shown, choice); choice is None when the
     user declined, or when there was nothing to show or no way to show it."""
@@ -1182,13 +1396,12 @@ def pick_build(spec: dict) -> tuple[bool, Release | None]:
         log("No other build is recent enough to offer")
         return False, None
     try:
-        index = pick_with_window(spec)
+        index = show_picker(spec)
     except Exception as e:
-        # No tkinter in this Python, or no desktop to show it on.
-        log(f"Could not show the build picker window: {e}")
-        if not console_is_interactive():
-            return False, None
-        index = pick_in_console(spec)
+        log(f"Could not show the build picker: {e}")
+        return False, None
+    if index is not None:
+        log(f"Chosen: {spec['options'][index]['title']}")
     return True, None if index is None else spec["options"][index]["release"]
 
 
@@ -1217,10 +1430,16 @@ def set_tracked_build(release: Release) -> None:
         log(f"Could not save your choice in {CONFIG_FILE.name}: {e}")
 
 
-def choose_first_build(state: dict) -> bool:
-    """Nothing installed yet: let the user choose the build to track.
+class PickerClosed(Exception):
+    """The first-run picker was closed without choosing: install nothing."""
 
-    Returns whether the picker was shown.
+
+def choose_build(state: dict, mode: str = "first") -> bool:
+    """Let the user choose the build to track: on the first start (nothing
+    installed yet) or with --choose-build (mode "change").
+
+    Returns whether the picker was shown. Raises PickerClosed when the user
+    closed it without choosing.
     """
     releases = scan_builds(state)
     if not known_build(REPO):
@@ -1230,14 +1449,36 @@ def choose_first_build(state: dict) -> bool:
         except UpdateError as e:
             log(str(e))
     if not releases:
+        if mode == "change":
+            raise UpdateError("Could not reach GitHub for the list of builds")
         return False
     stable = effective_stable(state, [r.major for r in releases])
-    shown, choice = pick_build(picker_spec("first", releases, stable))
+    installed = read_installed() if mode == "change" else None
+    installed_major = major_of(installed.get("version")) if installed else None
+    shown, choice = pick_build(
+        picker_spec(mode, releases, stable, installed_major=installed_major)
+    )
+    if shown and choice is None:
+        raise PickerClosed()
     if choice is None:
+        # The picker couldn't be shown: go on with the configured build.
         log(f"No build chosen, using {display_name(REPO)} from {CONFIG_FILE.name}")
     elif not same_repo(choice.repo, REPO):
         set_tracked_build(choice)
+        # A "no" to a fallback was about the old build.
+        if state.pop("declined_for_stable", None) is not None:
+            save_state(state)
     return shown
+
+
+def change_build() -> None:
+    """--choose-build: choose another build and install it."""
+    chrome_exe = EXTRACT_DIR / "chrome.exe"
+    if chrome_exe.exists() and is_chromium_running(chrome_exe):
+        raise RuntimeError("Chromium is running. Close it, then try again.")
+    if not choose_build(load_state(), "change"):
+        raise RuntimeError("Could not show the build picker")
+    update_to_latest(allow_picker=False)
 
 
 def choose_release(
@@ -1442,6 +1683,18 @@ def main() -> None:
 
     chrome_exe = EXTRACT_DIR / "chrome.exe"
 
+    if args == ["--choose-build"]:
+        try:
+            change_build()
+        except PickerClosed:
+            log("Build picker closed, nothing changed")
+            return
+        except Exception as e:
+            show_error(str(e), "Failed to change the Chromium build")
+            sys.exit(1)
+        launch_chromium(chrome_exe, [])
+        return
+
     # A link should open right away; the next plain start does the update.
     if chrome_exe.exists() and opens_link(args):
         log("Opening a link, skipping the update check")
@@ -1451,9 +1704,12 @@ def main() -> None:
         try:
             picker_shown = False
             if not chrome_exe.exists() and OFFER_FALLBACK:
-                picker_shown = choose_first_build(load_state())
+                picker_shown = choose_build(load_state())
             # One picker per start is enough.
             update_to_latest(allow_picker=not picker_shown)
+        except PickerClosed:
+            log("Build picker closed, quitting without installing")
+            return
         except Exception as e:
             # An update problem must never stand between the user and the
             # browser, whatever kind of problem it is.
