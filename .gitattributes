@@ -1,2 +1,8 @@
 # cmd.exe needs Windows line endings
 *.bat text eol=crlf
+
+# Keep the release zip (and GitHub's source archives) to the files users need
+tests/ export-ignore
+.github/ export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore
