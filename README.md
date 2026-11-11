@@ -2,7 +2,7 @@
 
 A single-file launcher that keeps a portable Chromium install up to date on Windows.
 
-On each start it asks GitHub for the latest Chromium release in the configured repository, downloads the chromium build from the release assets if it's not already on disk and launches `chrome.exe` against your profile directory.
+You pick your preferred Chromium build from a list, and on each start it installs the build's latest release before launching Chromium.
 
 If your build falls two or more major versions behind Chrome stable, Chromium-Py-Updater offers an up-to-date build to use in the meantime, and offers to switch back once yours catches up. See [When your build falls behind](#when-your-build-falls-behind).
 
