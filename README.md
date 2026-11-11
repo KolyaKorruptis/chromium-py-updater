@@ -14,7 +14,7 @@ If your build falls two or more major versions behind Chrome stable, Chromium-Py
 
 ## Usage
 
-Once Python is installed just double click `Chromium.py` script. On the first start it asks which Chromium build you want, then downloads it.
+First install [Python](https://www.python.org/downloads/windows/) then just double click `Chromium.py` script. On the first start it asks which Chromium build you want, then downloads it.
 
 You can also run it with arguments. These are forwarded to Chromium after the configured ones, so `python Chromium.py --incognito https://example.com` works as you'd expect.
 
