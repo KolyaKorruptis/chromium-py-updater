@@ -598,44 +598,23 @@ class Fallback(FallbackTestCase):
 
 
 class Widevine(FallbackTestCase):
-    def setUp(self):
-        super().setUp()
+    def test_widevine_in_the_profile_survives_updates_and_build_changes(self):
+        # The README tells users to put their own Widevine into the profile,
+        # where Chromium looks for it and updates never touch it.
         self.default_builds()
         self.answer = self.pick_repo(UNGOOGLED)
         self.start()
-        self.wv = self.dir / "bin" / "WidevineCdm"
-        self.wv.mkdir()
-        (self.wv / "manifest.json").write_text("mine", encoding="utf-8")
+        manifest = self.m.PROFILE_DIR / "WidevineCdm" / "4.10.2934.0" / "manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text("mine", encoding="utf-8")
 
-    def test_user_widevine_survives_an_update(self):
-        self.assertFalse(self.installed()["bundled_widevine"])
         self.net.add(UNGOOGLED, "157.0.8103.50", "ungoogled-chromium_157.0.8103.50-1.1_windows_x64.zip")
         self.start()
         self.assertEqual(self.installed()["version"], "157.0.8103.50")
-        self.assertEqual((self.wv / "manifest.json").read_text(encoding="utf-8"), "mine")
-
-    def test_unknown_origin_widevine_is_kept(self):
-        (self.dir / "latest.txt").unlink()
-        self.net.add(UNGOOGLED, "157.0.8103.60", "ungoogled-chromium_157.0.8103.60-1.1_windows_x64.zip")
-        self.start()
-        self.assertEqual((self.wv / "manifest.json").read_text(encoding="utf-8"), "mine")
-
-    def test_bundled_widevine_wins_and_yours_is_parked(self):
         self.m.set_tracked_build(self.m.Release(MARMADUKE, {}, None))
         self.start()
         self.assertEqual(self.installed()["repo"], MARMADUKE)
-        self.assertEqual((self.wv / "manifest.json").read_text(encoding="utf-8"), "{}")
-        self.assertEqual((self.dir / "WidevineCdm.kept" / "manifest.json").read_text(encoding="utf-8"), "mine")
-
-    def test_bundled_widevine_is_not_carried_to_a_build_without_it(self):
-        self.m.set_tracked_build(self.m.Release(MARMADUKE, {}, None))
-        self.start()
-        shutil.rmtree(self.dir / "WidevineCdm.kept")
-        self.m.set_tracked_build(self.m.Release(UNGOOGLED, {}, None))
-        self.net.add(UNGOOGLED, "157.0.8103.51", "ungoogled-chromium_157.0.8103.51-1.1_windows_x64.zip")
-        self.start()
-        self.assertEqual(self.installed()["repo"], UNGOOGLED)
-        self.assertFalse(self.wv.exists(), "Marmaduke's own Widevine stays behind")
+        self.assertEqual(manifest.read_text(encoding="utf-8"), "mine")
 
 
 class Checksums(FallbackTestCase):

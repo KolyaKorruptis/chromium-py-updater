@@ -83,7 +83,7 @@ To switch to another build at any time, just double click `choose-build.bat` (or
 
 You can also run Chromium-Py-Updater with arguments. These are forwarded to Chromium after the configured ones, so `python Chromium.py --incognito https://example.com` works as you'd expect.
 
-To add Widevine (for DRM-protected video) to ungoogled-chromium, see the [ungoogled-chromium FAQ](https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/faq.md#how-do-i-install-widevine-cdm). A `WidevineCdm` folder that you place in `bin/` is kept on updates and build changes. If you switch to a build that ships its own Widevine, your copy is moved to `WidevineCdm.kept` next to `Chromium.py`. It goes back into `bin/` if you switch to a build without Widevine later.
+To add Widevine (for DRM-protected video) to ungoogled-chromium, install Google Chrome and copy the `WidevineCdm` folder from `C:\Program Files\Google\Chrome\Application\<Chrome version>\` into your profile as `profile\WidevineCdm\<Widevine version>\`, e.g. `profile\WidevineCdm\4.10.2934.0\`. The Widevine version is in the folder's `manifest.json`, and Chromium won't find Widevine without that version folder. Updates never touch your profile, so your copy stays. It isn't updated automatically, though, so repeat this if DRM video stops working. Some streaming services may refuse to play anyway (see [ungoogled-chromium-windows#247](https://github.com/ungoogled-software/ungoogled-chromium-windows/issues/247)). If you'd rather not deal with this, Marmaduke is also ungoogled and ships Widevine.
 
 ## Tests
 
