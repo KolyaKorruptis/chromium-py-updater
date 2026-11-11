@@ -238,6 +238,25 @@ class FirstRun(FallbackTestCase):
         self.assertIn('"repo": "Hibbiki/chromium-win64"', config)
         self.assertIn('"asset_suffix": "chrome.7z"', config)
         self.assertIn("// Supported placeholders", config, "comments kept")
+        self.assertEqual(config.count('"repo"'), 1)
+        json.loads("\n".join(l for l in config.splitlines() if not l.lstrip().startswith("//")))
+
+    def test_generated_config_leaves_the_build_to_the_picker(self):
+        self.default_builds()
+        self.answer = None
+        self.start()
+        config = (self.dir / "config.jsonc").read_text(encoding="utf-8")
+        self.assertNotIn('"repo"', config)
+        self.assertNotIn('"asset_suffix"', config)
+
+    def test_choice_added_to_an_empty_config(self):
+        self.default_builds()
+        (self.dir / "config.jsonc").write_text("{}", encoding="utf-8")
+        self.answer = self.pick_repo(UNGOOGLED)
+        self.start()
+        config = (self.dir / "config.jsonc").read_text(encoding="utf-8")
+        data = json.loads("\n".join(l for l in config.splitlines() if not l.lstrip().startswith("//")))
+        self.assertEqual(data, {"repo": UNGOOGLED, "asset_suffix": "_windows_x64.zip"})
 
         self.picks.clear()
         self.start()
@@ -332,12 +351,76 @@ class Fallback(FallbackTestCase):
         self.assertEqual(self.net.github_calls() - before, 2)
         self.assertEqual(self.installed()["repo"], UNGOOGLED)
 
-        # Marmaduke catches up: back to it.
-        self.net.add(MARMADUKE, "158.0.8127.10", "ungoogled-chromium-158.0.8127.10-1_Win64.7z",
-                     data=make_archive(widevine=True))
+        # Marmaduke catches up: switching back is offered, not done.
+        self.marmaduke_catches_up()
+        self.answer = self.pick_repo(MARMADUKE)
         self.start()
+        spec = self.picks[0]
+        self.assertEqual(spec["headline"], "Marmaduke has caught up")
+        self.assertIn("Marmaduke 158.0.8127.10 is up to date again", spec["intro"])
+        self.assertEqual(spec["options"][spec["preselect"]]["release"].repo, MARMADUKE)
+        self.assertEqual(spec["cancel_label"], "Keep ungoogled-chromium")
+        statuses = sorted(o["status"] for o in spec["options"])
+        self.assertEqual(statuses, ["up to date, installed", "up to date, your build"])
         self.assertEqual(self.installed()["repo"], MARMADUKE)
         self.assertEqual(self.installed()["version"], "158.0.8127.10")
+
+        self.picks.clear()
+        self.start()
+        self.assertEqual(self.picks, [], "back on the own build, nothing to ask")
+
+    def use_ungoogled_fallback(self):
+        self.make_marmaduke_outdated()
+        self.net.add(UNGOOGLED, "158.0.8127.20", "ungoogled-chromium_158.0.8127.20-1.1_windows_x64.zip")
+        self.answer = self.pick_repo(UNGOOGLED)
+        self.start()
+        self.assertEqual(self.installed()["repo"], UNGOOGLED)
+        self.picks.clear()
+
+    def marmaduke_catches_up(self, version: str = "158.0.8127.10"):
+        self.net.add(MARMADUKE, version, f"ungoogled-chromium-{version}-1_Win64.7z",
+                     data=make_archive(widevine=True))
+
+    def test_a_kept_fallback_becomes_your_build(self):
+        self.use_ungoogled_fallback()
+        self.marmaduke_catches_up()
+        self.answer = None
+        self.start()
+        self.assertEqual(len(self.picks), 1)
+        self.assertIn("keep ungoogled-chromium as your build from now on", self.picks[0]["intro"])
+        self.assertEqual(self.installed()["repo"], UNGOOGLED)
+        self.assertEqual(self.installed()["tracked"], UNGOOGLED)
+        self.assertIn('"repo": "ungoogled-software/ungoogled-chromium-windows"',
+                      (self.dir / "config.jsonc").read_text(encoding="utf-8"))
+        self.assertNotIn("fallback", json.loads((self.dir / "fallback.json").read_text()))
+        self.assertTrue(self.launched)
+
+        # Marmaduke is just another build now: never offered back.
+        self.net.stable = 159
+        self.net.add(UNGOOGLED, "159.0.8200.5", "ungoogled-chromium_159.0.8200.5-1.1_windows_x64.zip")
+        self.marmaduke_catches_up("159.0.8200.1")
+        self.start()
+        self.assertEqual(len(self.picks), 1)
+        self.assertEqual(self.installed()["version"], "159.0.8200.5")
+
+    def test_no_switch_back_to_an_older_chromium(self):
+        self.use_ungoogled_fallback()
+        self.marmaduke_catches_up("157.0.8103.30")  # 1 behind 158: recent enough, but older
+        self.answer = self.pick_repo(MARMADUKE)
+        self.start()
+        self.assertEqual(self.picks, [])
+        self.assertEqual(self.installed()["repo"], UNGOOGLED)
+
+    def test_choose_build_while_on_a_fallback_installs_the_choice(self):
+        self.use_ungoogled_fallback()
+        self.marmaduke_catches_up("157.0.8103.30")
+        self.answer = self.pick_repo(MARMADUKE)
+        self.start("--choose-build")
+        marmaduke = next(o for o in self.picks[0]["options"] if o["release"].repo == MARMADUKE)
+        self.assertIn("Older than the installed Chromium 158: your profile may not work with it",
+                      marmaduke["warnings"])
+        self.assertEqual(self.installed()["repo"], MARMADUKE)
+        self.assertNotIn("fallback", json.loads((self.dir / "fallback.json").read_text()))
 
     def test_stable_from_github_when_chrome_for_testing_lags(self):
         # Chrome for Testing still says 157, but Hibbiki is already out as 158:

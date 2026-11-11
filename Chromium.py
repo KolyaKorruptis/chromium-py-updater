@@ -130,7 +130,12 @@ def load_config() -> dict:
 
     if not CONFIG_FILE.exists():
         try:
-            write_default_config(CONFIG_FILE, default_config)
+            # The build is chosen in the picker, which adds repo and
+            # asset_suffix; setting them by hand is for builds not in its list.
+            write_default_config(
+                CONFIG_FILE,
+                {k: v for k, v in default_config.items() if k not in ("repo", "asset_suffix")},
+            )
         except OSError:
             pass
         return default_config
@@ -697,6 +702,11 @@ def load_state() -> dict:
         return {}
 
 
+def drop_keys(state: dict, *keys: str) -> bool:
+    """Remove keys from state; whether any of them was there."""
+    return bool([key for key in keys if state.pop(key, None) is not None])
+
+
 def save_state(state: dict) -> None:
     try:
         STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -853,6 +863,9 @@ def install(release: Release, installed: dict | None) -> None:
 
     if is_installed(release, installed):
         log(f"Already up to date: {asset_name}")
+        if not same_repo(installed.get("tracked"), REPO):
+            # A kept fallback became the tracked build: no longer a stand-in.
+            VERSION_FILE.write_text(json.dumps({**installed, "tracked": REPO}, indent=2), encoding="utf-8")
         return
 
     if archive.exists() and not file_matches_digest(archive, digest):
@@ -933,6 +946,14 @@ def status_text(major: int | None, stable: int | None) -> str:
     return f"{gap} version{'s' if gap != 1 else ''} behind"
 
 
+def status_suffix(mode: str, release: Release) -> str:
+    if mode in ("change", "switchback") and same_repo(release.repo, REPO):
+        return ", your build"
+    if mode == "switchback":
+        return ", installed"
+    return ""
+
+
 def picker_spec(
     mode: str,
     releases: list[Release],
@@ -945,7 +966,8 @@ def picker_spec(
     mode "first": nothing is installed yet, the choice becomes the build to
     track. mode "change": started with --choose-build, the choice replaces
     the tracked build. mode "fallback": the tracked build is outdated, the
-    choice is used until it catches up.
+    choice is used until it catches up. mode "switchback": releases are the
+    caught-up tracked build and the installed fallback.
     """
     base = known_build(REPO)
 
@@ -974,7 +996,7 @@ def picker_spec(
                 "release": release,
                 "title": f"{display_name(release.repo)} {release.version or ''}".strip(),
                 "status": status_text(release.major, stable)
-                + (", your build" if mode == "change" and same_repo(release.repo, REPO) else ""),
+                + status_suffix(mode, release),
                 "freshness": freshness(release.major, stable),
                 "enabled": freshness(release.major, stable) != "outdated",
                 "features": describe_build(build),
@@ -1008,17 +1030,32 @@ def picker_spec(
         )
         ok_label = "Install"
         cancel_label = "Quit without changes"
-    else:
+    elif mode == "fallback":
         gap = stable - original.major
         headline = f"{name} is behind Chrome stable"
         intro = (
             f"{name} {original.version} is {gap} major versions behind Chrome "
             f"{stable}, so it is missing security fixes. Choose a build to use until "
             f"{name} catches up. Chromium-Py-Updater keeps checking {name} and "
-            "switches back to it automatically."
+            "offers to switch back once it has caught up."
         )
         ok_label = "Use this build"
         cancel_label = f"Keep {name}"
+    else:  # switchback
+        kept = next(r for r in releases if not same_repo(r.repo, REPO))
+        kept_name = display_name(kept.repo)
+        headline = f"{name} has caught up"
+        if freshness(original.major, stable) == "current":
+            caught_up = "is up to date again"
+        else:
+            caught_up = f"is only {status_text(original.major, stable)} Chrome {stable} again"
+        intro = (
+            f"{name} {original.version} {caught_up}, so the stand-in "
+            f"{kept_name} is no longer needed. Switch back to {name}, or keep "
+            f"{kept_name} as your build from now on. Your profile stays as it is."
+        )
+        ok_label = "Use this build"
+        cancel_label = f"Keep {kept_name}"
 
     return {
         "headline": headline,
@@ -1258,7 +1295,7 @@ def render_picker(spec: dict, selected: int, cols: int, rows: int) -> list[str]:
     width = max(20, min(cols - 2, 100))
 
     def wrap(text: str, indent: int) -> list[str]:
-        return textwrap.wrap(text, width - indent) or [""]
+        return textwrap.wrap(text, width - indent, break_on_hyphens=False) or [""]
 
     def title_line(head: str, status: str) -> list[str]:
         """Title and status on one line, or the status below when too narrow."""
@@ -1416,13 +1453,25 @@ def set_tracked_build(release: Release) -> None:
         text = CONFIG_FILE.read_text(encoding="utf-8")
     except OSError:
         return
+    missing = []
     for key, value in (("repo", REPO), ("asset_suffix", ASSET_SUFFIX)):
         pattern = re.compile(rf'^(\s*"{key}"\s*:\s*)"(?:[^"\\]|\\.)*"', re.MULTILINE)
         new = json.dumps(value)
         if pattern.search(text):
             text = pattern.sub(lambda m: m.group(1) + new, text, count=1)
         else:
-            text = text.replace("{", "{\n  " + f'"{key}": {new},', 1)
+            missing.append(f'  "{key}": {new}')
+    if missing:
+        # Added at the top, before the comments of the generated file.
+        start = text.index("{") + 1
+        rest = "\n".join(
+            line for line in text[start:].splitlines() if not line.lstrip().startswith("//")
+        )
+        comma = "" if rest.strip().startswith("}") else ","
+        block = "\n  // Your Chromium build, chosen in the picker (choose-build.bat)\n"
+        block += ",\n".join(missing) + comma + "\n"
+        # A blank line before the settings that follow.
+        text = text[:start] + block + ("\n" if comma else "") + text[start:].lstrip("\n")
     try:
         CONFIG_FILE.write_text(text, encoding="utf-8")
         log(f"Saved {display_name(REPO)} as your build in {CONFIG_FILE.name}")
@@ -1476,9 +1525,14 @@ def change_build() -> None:
     chrome_exe = EXTRACT_DIR / "chrome.exe"
     if chrome_exe.exists() and is_chromium_running(chrome_exe):
         raise RuntimeError("Chromium is running. Close it, then try again.")
-    if not choose_build(load_state(), "change"):
+    state = load_state()
+    if not choose_build(state, "change"):
         raise RuntimeError("Could not show the build picker")
-    update_to_latest(allow_picker=False)
+    # The chosen build is installed as it is, also while a fallback was in
+    # use: choosing is the answer to every open question about fallbacks.
+    if drop_keys(state, "fallback", "declined_for_stable"):
+        save_state(state)
+    update_to_latest(allow_picker=False, offer_fallback=False)
 
 
 def choose_release(
@@ -1517,8 +1571,10 @@ def choose_release(
 
     if freshness(original.major, stable) != "outdated":
         if on_fallback:
-            log(f"{name} {original.version} is recent enough again, switching back to it")
-        if state.pop("fallback", None) is not None:
+            return offer_switch_back(
+                original, installed, current_fallback, stable, state, allow_picker
+            )
+        if drop_keys(state, "fallback"):
             save_state(state)
         return original
 
@@ -1568,12 +1624,62 @@ def choose_release(
     return choice
 
 
-def update_to_latest(allow_picker: bool = True) -> None:
+def offer_switch_back(
+    original: Release,
+    installed: dict,
+    current_fallback: Release | None,
+    stable: int | None,
+    state: dict,
+    allow_picker: bool,
+) -> Release:
+    """The tracked build has caught up while a fallback is installed: ask
+    whether to switch back to it. Never switches by itself."""
+    name = display_name(REPO)
+    kept = current_fallback or Release(
+        installed["repo"], {"name": installed["asset"]}, installed.get("version")
+    )
+    kept_name = display_name(kept.repo)
+    if not current_fallback and not (EXTRACT_DIR / "chrome.exe").exists():
+        # Nothing left to keep: the fallback is neither reachable nor on disk.
+        log(f"{kept_name} can't be checked and isn't installed, using {name}")
+        return original
+
+    installed_major = major_of(installed.get("version"))
+    if original.major is None or installed_major is None:
+        log(f"Can't compare {name} with the installed {kept_name}, keeping {kept_name}")
+        return kept
+    if original.major < installed_major:
+        # Going back to an older Chromium can break the profile.
+        log(
+            f"{name} {original.version} has caught up, but is older than the "
+            f"installed {kept_name} {installed.get('version')}: keeping {kept_name}"
+        )
+        return kept
+    if not allow_picker:
+        return kept
+
+    shown, choice = pick_build(picker_spec("switchback", [original, kept], stable, original))
+    if not shown:
+        # Asked again on the next start.
+        return kept
+    drop_keys(state, "fallback", "declined_for_stable")
+    save_state(state)
+    if choice is not None and same_repo(choice.repo, REPO):
+        log(f"Switching back to {name} {original.version}")
+        return original
+    # Kept, it is no fallback anymore but your build, as if chosen on the
+    # first start.
+    log(f"Keeping {kept_name} as your build")
+    set_tracked_build(kept)
+    return kept
+
+
+def update_to_latest(allow_picker: bool = True, offer_fallback: bool = True) -> None:
     installed = read_installed()
     log("Checking latest release")
     original = fetch_release(REPO, ASSET_SUFFIX)
     target = original
-    if OFFER_FALLBACK:
+    if OFFER_FALLBACK and offer_fallback:
         target = choose_release(original, installed, load_state(), allow_picker)
     install(target, installed)
 
