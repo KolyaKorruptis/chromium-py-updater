@@ -2,9 +2,9 @@
 
 A single-file launcher that keeps a portable Chromium install up to date on Windows.
 
-You pick your preferred Chromium build from a list, and on each start it installs the build's latest release before launching Chromium.
+You pick your preferred Chromium build from a list. Then on each start it checks and installs the latest release from that build, before launching Chromium against your `profile`. 
 
-If your build falls two or more major versions behind Chrome stable, Chromium-Py-Updater offers an up-to-date build to use in the meantime, and offers to switch back once yours catches up. See [When your build falls behind](#when-your-build-falls-behind).
+If your build falls two or more major versions behind, it will inform you and offer an up-to-date alternative. See [When your build falls behind](#when-your-build-falls-behind).
 
 ## Requirements
 
@@ -14,9 +14,8 @@ If your build falls two or more major versions behind Chrome stable, Chromium-Py
 
 ## Usage
 
-First install [Python](https://www.python.org/downloads/windows/), then double click `Chromium.py`. On the first start it lists the Chromium builds it knows.
-
-To switch to another build later, double click `choose-build.bat` (or run `python Chromium.py --choose-build`).
+1. Install [Python](https://www.python.org/downloads/windows/)
+2. Double click `Chromium.py`
 
 ## Portable
 
@@ -37,7 +36,7 @@ All files live in the work directory next to `Chromium.py`:
 
 ## Configuration
 
-On its first run the script creates its default configuration in `config.jsonc`. This file never gets overwritten, so your changes are safe across updates. The only lines Chromium-Py-Updater changes in it are `repo` and `asset_suffix`, when you select a new build. Any key you remove falls back to its built-in default. Delete it to get a fresh copy of the defaults.
+On its first run the script creates its default configuration in `config.jsonc`. After that the only lines Chromium-Py-Updater will update are `repo` and `asset_suffix`, when you select a new build. Any key you remove falls back to its built-in default. Delete `config.jsonc` to get a fresh copy of the defaults.
 
 Edit `config.jsonc` to your liking, for example:
 
@@ -61,7 +60,7 @@ Edit `config.jsonc` to your liking, for example:
 }
 ```
 
-To track a build that isn't in the selection list, set `repo` and `asset_suffix`.
+To track a build that isn't in the selection list, you can set `repo` and `asset_suffix` yourself.
 
 ## Default browser
 
@@ -73,15 +72,17 @@ From a terminal, `python Chromium.py --register` and `--unregister` do the same.
 
 ## When your build falls behind
 
-Volunteer-maintained builds sometimes fall behind Chrome stable for a while, and in that time they miss security fixes. On every start Chromium-Py-Updater compares your build with [Chrome stable](https://googlechromelabs.github.io/chrome-for-testing/).
+Volunteer-maintained builds sometimes fall behind [Chrome stable](https://googlechromelabs.github.io/chrome-for-testing/) for a while and miss security fixes. 
 
-When your build is two or more major versions behind, Chromium-Py-Updater offers alternative builds instead.
+When your build falls two or more major versions behind, Chromium-Py-Updater will offer to install an alternative build instead. Once your original build catches up, it offers to switch back.
 
 ## Good to know
 
-You can also run it with arguments. These are forwarded to Chromium after the configured ones, so `python Chromium.py --incognito https://example.com` works as you'd expect.
+To switch to another build at any time, just double click `choose-build.bat` (or run `python Chromium.py --choose-build`).
 
-To add Widevine (needed for DRM-protected video) to ungoogled-chromium, see the [ungoogled-chromium FAQ](https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/faq.md#how-do-i-install-widevine-cdm); a `WidevineCdm` folder you put in `bin/` is kept on updates.
+You can also run Chromium-Py-Updater with arguments. These are forwarded to Chromium after the configured ones, so `python Chromium.py --incognito https://example.com` works as you'd expect.
+
+To add Widevine (for DRM-protected video) to ungoogled-chromium, see the [ungoogled-chromium FAQ](https://github.com/ungoogled-software/ungoogled-chromium-wiki/blob/master/faq.md#how-do-i-install-widevine-cdm). A `WidevineCdm` folder that you place in `bin/` is kept on updates and build changes.
 
 ## Tests
 
