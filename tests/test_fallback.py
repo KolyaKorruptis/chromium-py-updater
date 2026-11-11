@@ -74,6 +74,8 @@ class FakeNet:
 
     def download(self, url: str, dest: Path) -> None:
         self.downloads.append(url)
+        if url in self.down:
+            raise OSError("download interrupted")
         dest.write_bytes(self.files[url])
 
     def github_calls(self) -> int:
@@ -114,13 +116,20 @@ class FallbackTestCase(unittest.TestCase):
         return module
 
     def start(self) -> None:
-        """What main() does before launching, without launching."""
+        """A plain start of the launcher: the real main(), minus the launch."""
         m = self.load()
-        m.ensure_dir(m.DOWNLOAD_DIR)
-        chrome_exe = m.EXTRACT_DIR / "chrome.exe"
-        if not chrome_exe.exists() and m.OFFER_FALLBACK:
-            m.choose_first_build(m.load_state())
-        m.update_to_latest()
+        self.launched = False
+
+        def launch(exe, args):
+            self.launched = True
+
+        m.launch_chromium = launch
+        argv = sys.argv
+        sys.argv = ["Chromium.py"]
+        try:
+            m.main()
+        finally:
+            sys.argv = argv
 
     def assertUpdateError(self):
         """The module is reloaded on every start, so match UpdateError by name."""
@@ -238,9 +247,17 @@ class FirstRun(FallbackTestCase):
     def test_offline_first_run_skips_picker(self):
         self.default_builds()
         self.net.down |= {MARMADUKE.lower(), UNGOOGLED.lower(), HIBBIKI.lower(), SUPERMIUM.lower(), "stable"}
-        with self.assertUpdateError():
+        with self.assertRaises(RuntimeError):
             self.start()
         self.assertEqual(self.picks, [])
+
+    def test_one_picker_per_start_on_first_run(self):
+        self.default_builds()
+        self.net.stable = 158  # the default, Marmaduke 156, is outdated
+        self.answer = None
+        self.start()
+        self.assertEqual(len(self.picks), 1)
+        self.assertEqual(self.picks[0]["headline"], "Choose a Chromium build")
 
     def test_custom_repo_is_offered_too(self):
         self.default_builds()
@@ -308,9 +325,9 @@ class Fallback(FallbackTestCase):
         self.assertEqual(self.installed()["version"], "158.0.8127.10")
 
     def test_stable_from_github_when_chrome_for_testing_lags(self):
-        # Chrome for Testing still says 157, but ungoogled-chromium is out as 158
-        # and Hibbiki as 159: Marmaduke 156 is then really 3 behind.
-        self.net.add(HIBBIKI, "159.0.8144.1", "chrome.7z")
+        # Chrome for Testing still says 157, but Hibbiki is already out as 158:
+        # Marmaduke 156 is then really 2 behind.
+        self.net.add(HIBBIKI, "158.0.8144.1", "chrome.7z")
         self.answer = None
         (self.dir / "fallback.json").unlink()
         self.start()
@@ -323,10 +340,10 @@ class Fallback(FallbackTestCase):
         original = m.fetch_release(MARMADUKE, "_Win64.7z")
         candidates = m.scan_builds(state)
         stable = m.effective_stable(state, [original.major, *[r.major for r in candidates]])
-        self.assertEqual(stable, 159)
+        self.assertEqual(stable, 158)
         spec = m.picker_spec("fallback", candidates, stable, original)
         statuses = {o["release"].repo: (o["status"], o["enabled"]) for o in spec["options"]}
-        self.assertEqual(statuses[UNGOOGLED], ("2 versions behind", False))
+        self.assertEqual(statuses[UNGOOGLED], ("1 version behind", True))
         self.assertEqual(statuses[HIBBIKI], ("up to date", True))
 
     def test_decline_is_remembered_until_the_next_chrome_version(self):
@@ -340,6 +357,7 @@ class Fallback(FallbackTestCase):
         self.assertEqual(len(self.picks), 1, "not asked again for the same Chrome version")
 
         self.net.stable = 159
+        self.net.add(HIBBIKI, "159.0.8144.1", "chrome.7z")
         (self.dir / "fallback.json").write_text(
             json.dumps({"declined_for_stable": 158}), encoding="utf-8"
         )
@@ -384,6 +402,74 @@ class Fallback(FallbackTestCase):
         self.answer = None
         with self.assertUpdateError():
             self.m.update_to_latest()
+
+    def test_failed_scan_is_not_taken_as_a_decline(self):
+        self.make_marmaduke_outdated()
+        self.net.down |= {UNGOOGLED.lower(), HIBBIKI.lower(), SUPERMIUM.lower()}
+        self.start()
+        self.assertEqual(self.picks, [])
+        self.assertNotIn("declined_for_stable", json.loads((self.dir / "fallback.json").read_text()))
+        self.assertTrue(self.launched)
+
+        self.net.down.clear()
+        state = json.loads((self.dir / "fallback.json").read_text())
+        state.pop("scan", None)
+        (self.dir / "fallback.json").write_text(json.dumps(state), encoding="utf-8")
+        self.start()
+        self.assertEqual(len(self.picks), 1, "offered once the builds can be checked")
+
+    def test_keep_on_an_outdated_fallback_returns_to_the_configured_build(self):
+        self.make_marmaduke_outdated()
+        self.answer = self.pick_repo(UNGOOGLED)
+        self.start()
+        self.assertEqual(self.installed()["repo"], UNGOOGLED)
+        self.net.stable = 160  # now ungoogled-chromium 157 is outdated too
+        (self.dir / "fallback.json").unlink()
+        self.answer = None
+        self.start()
+        self.assertIn("Keep Marmaduke", self.picks[-1]["cancel_label"])
+        self.assertEqual(self.installed()["repo"], MARMADUKE)
+
+    def test_unfinished_fallback_install_is_resumed_without_asking(self):
+        self.make_marmaduke_outdated()
+        url = self.net.releases[UNGOOGLED.lower()]["assets"][1]["browser_download_url"]
+        self.net.down.add(url)
+        self.answer = self.pick_repo(UNGOOGLED)
+        self.start()
+        self.assertEqual(self.installed()["repo"], MARMADUKE, "download failed")
+        self.assertTrue(self.launched, "the installed build still starts")
+
+        self.net.down.clear()
+        self.answer = None
+        self.start()
+        self.assertEqual(len(self.picks), 1, "not asked again")
+        self.assertEqual(self.installed()["repo"], UNGOOGLED)
+
+    def test_unexpected_error_still_launches(self):
+        m = self.load()
+
+        def broken(*args):
+            raise OSError("archive locked by antivirus")
+
+        self.net.add(MARMADUKE, "157.0.1.1", "x-157.0.1.1_Win64.7z")
+        m.launch_chromium = lambda exe, args: setattr(self, "launched", True)
+        m.install = broken
+        self.launched = False
+        argv = sys.argv
+        sys.argv = ["Chromium.py"]
+        try:
+            m.main()
+        finally:
+            sys.argv = argv
+        self.assertTrue(self.launched)
+
+    def test_misread_version_does_not_raise_stable(self):
+        self.net.add(HIBBIKI, "2025.11.10.1", "chrome.7z", tag="build-2025.11.10.1")
+        m = self.m
+        state = m.load_state()
+        scanned = [r.major for r in m.scan_builds({})]
+        self.assertIn(2025, scanned)
+        self.assertEqual(m.effective_stable(state, scanned), 157)
 
     def test_outdated_fallback_asks_again(self):
         self.make_marmaduke_outdated()
@@ -430,6 +516,12 @@ class Widevine(FallbackTestCase):
         self.assertEqual(self.installed()["version"], "157.0.8103.50")
         self.assertEqual((self.wv / "manifest.json").read_text(encoding="utf-8"), "mine")
 
+    def test_unknown_origin_widevine_is_kept(self):
+        (self.dir / "latest.txt").unlink()
+        self.net.add(UNGOOGLED, "157.0.8103.60", "ungoogled-chromium_157.0.8103.60-1.1_windows_x64.zip")
+        self.start()
+        self.assertEqual((self.wv / "manifest.json").read_text(encoding="utf-8"), "mine")
+
     def test_bundled_widevine_wins_and_yours_is_parked(self):
         self.m.set_tracked_build(self.m.Release(MARMADUKE, {}, None))
         self.start()
@@ -453,7 +545,7 @@ class Checksums(FallbackTestCase):
         self.default_builds()
         self.net.add(MARMADUKE, "157.0.1.1", "x_Win64.7z", digest_ok=False)
         self.answer = self.pick_repo(MARMADUKE)
-        with self.assertUpdateError():
+        with self.assertRaises(RuntimeError):
             self.start()
         self.assertFalse((self.dir / "download" / "x_Win64.7z").exists())
         self.assertFalse((self.dir / "latest.txt").exists())
@@ -555,9 +647,10 @@ class ConsolePicker(FallbackTestCase):
         m.pick_with_window = broken
         m.console_is_interactive = lambda: True
         m.pick_in_console = lambda spec: 1
-        self.assertEqual(m.pick_build(self.spec()).repo, HIBBIKI)
+        shown, choice = m.pick_build(self.spec())
+        self.assertEqual((shown, choice.repo), (True, HIBBIKI))
         m.console_is_interactive = lambda: False
-        self.assertIsNone(m.pick_build(self.spec()))
+        self.assertEqual(m.pick_build(self.spec()), (False, None))
 
 
 if __name__ == "__main__":

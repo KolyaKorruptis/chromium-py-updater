@@ -739,7 +739,12 @@ def effective_stable(state: dict, majors: list[int | None]) -> int | None:
 
     The Chrome stable lookup can lag behind, the GitHub releases can't.
     """
-    known = [m for m in [chrome_stable_major(state), *majors] if m is not None]
+    reference = chrome_stable_major(state)
+    known = [m for m in majors if m is not None]
+    if reference is not None:
+        # A build can be a version ahead of a lagging lookup, not more: a
+        # larger number is a misread version (e.g. a date in a tag).
+        known = [m for m in known if m <= reference + 1] + [reference]
     return max(known) if known else None
 
 
@@ -803,14 +808,19 @@ def write_installed(release: Release, bundled_widevine: bool) -> None:
 
 
 def widevine_was_added_by_hand(installed: dict | None) -> bool:
-    if not installed or not (EXTRACT_DIR / WIDEVINE_DIR).is_dir():
+    """Whether bin/WidevineCdm is the user's own and has to be kept.
+
+    When that can't be told, it is kept: parking it costs nothing, deleting
+    a folder the user added can't be undone.
+    """
+    if not (EXTRACT_DIR / WIDEVINE_DIR).is_dir():
         return False
-    bundled = installed.get("bundled_widevine")
-    if bundled is None:
-        # Written by an older version of this script: go by the build table.
-        build = known_build(installed.get("repo"))
-        return build is not None and not build["widevine"]
-    return not bundled
+    bundled = installed.get("bundled_widevine") if installed else None
+    if bundled is not None:
+        return not bundled
+    # No or an old-style version file: go by the build table.
+    build = known_build(installed.get("repo") if installed else REPO)
+    return not build["widevine"] if build else True
 
 
 def local_archive_name(release: Release) -> str:
@@ -1165,19 +1175,21 @@ def pick_in_console(spec: dict) -> int | None:
         console("Please enter one of the numbers shown.")
 
 
-def pick_build(spec: dict) -> Release | None:
-    """Show the picker; None when the user declines or it can't be shown."""
-    if not spec["options"]:
-        return None
+def pick_build(spec: dict) -> tuple[bool, Release | None]:
+    """Show the picker. Returns (shown, choice); choice is None when the
+    user declined, or when there was nothing to show or no way to show it."""
+    if not any(option["enabled"] for option in spec["options"]):
+        log("No other build is recent enough to offer")
+        return False, None
     try:
         index = pick_with_window(spec)
     except Exception as e:
         # No tkinter in this Python, or no desktop to show it on.
         log(f"Could not show the build picker window: {e}")
         if not console_is_interactive():
-            return None
+            return False, None
         index = pick_in_console(spec)
-    return None if index is None else spec["options"][index]["release"]
+    return True, None if index is None else spec["options"][index]["release"]
 
 
 def set_tracked_build(release: Release) -> None:
@@ -1205,8 +1217,11 @@ def set_tracked_build(release: Release) -> None:
         log(f"Could not save your choice in {CONFIG_FILE.name}: {e}")
 
 
-def choose_first_build(state: dict) -> None:
-    """Nothing installed yet: let the user choose the build to track."""
+def choose_first_build(state: dict) -> bool:
+    """Nothing installed yet: let the user choose the build to track.
+
+    Returns whether the picker was shown.
+    """
     releases = scan_builds(state)
     if not known_build(REPO):
         # A repo of the user's own from config.jsonc is offered as well.
@@ -1215,16 +1230,19 @@ def choose_first_build(state: dict) -> None:
         except UpdateError as e:
             log(str(e))
     if not releases:
-        return
+        return False
     stable = effective_stable(state, [r.major for r in releases])
-    choice = pick_build(picker_spec("first", releases, stable))
+    shown, choice = pick_build(picker_spec("first", releases, stable))
     if choice is None:
         log(f"No build chosen, using {display_name(REPO)} from {CONFIG_FILE.name}")
     elif not same_repo(choice.repo, REPO):
         set_tracked_build(choice)
+    return shown
 
 
-def choose_release(original: Release, installed: dict | None, state: dict) -> Release:
+def choose_release(
+    original: Release, installed: dict | None, state: dict, allow_picker: bool = True
+) -> Release:
     """The release to install: the tracked build's, or a fallback's.
 
     A fallback is only used while the tracked build is two or more major
@@ -1239,12 +1257,17 @@ def choose_release(original: Release, installed: dict | None, state: dict) -> Re
         and same_repo(installed.get("tracked"), REPO)
         and known_build(installed.get("repo")) is not None
     )
+    # A fallback chosen earlier whose install didn't finish (download failed,
+    # or Chromium was started meanwhile) is picked up again, not asked anew.
+    chosen = state.get("fallback")
+    if not (isinstance(chosen, dict) and same_repo(chosen.get("for"), REPO)):
+        chosen = None
+    fallback_build = known_build(installed["repo"] if on_fallback else (chosen or {}).get("repo"))
 
     current_fallback = None
-    if on_fallback:
-        build = known_build(installed["repo"])
+    if fallback_build:
         try:
-            current_fallback = fetch_release(build["repo"], build["asset_suffix"])
+            current_fallback = fetch_release(fallback_build["repo"], fallback_build["asset_suffix"])
         except UpdateError as e:
             log(str(e))
 
@@ -1254,51 +1277,63 @@ def choose_release(original: Release, installed: dict | None, state: dict) -> Re
     if freshness(original.major, stable) != "outdated":
         if on_fallback:
             log(f"{name} {original.version} is recent enough again, switching back to it")
+        if state.pop("fallback", None) is not None:
+            save_state(state)
         return original
 
     gap = stable - original.major
     log(f"{name} {original.version} is {gap} major versions behind Chrome stable {stable}")
-    keep = current_fallback or original
 
-    if on_fallback and not current_fallback:
+    if fallback_build and not current_fallback:
         # GitHub didn't answer for the fallback: stay with what is installed.
-        if not (EXTRACT_DIR / "chrome.exe").exists():
-            raise UpdateError(f"Could not check {display_name(installed['repo'])}")
-        return Release(installed["repo"], {"name": installed["asset"]}, installed.get("version"))
+        if on_fallback and (EXTRACT_DIR / "chrome.exe").exists():
+            return Release(installed["repo"], {"name": installed["asset"]}, installed.get("version"))
+        if on_fallback:
+            raise UpdateError(f"Could not check {fallback_build['name']}")
+        return original
 
     if current_fallback and freshness(current_fallback.major, stable) != "outdated":
-        log(f"Using {display_name(current_fallback.repo)} until {name} catches up")
+        log(f"Using {fallback_build['name']} until {name} catches up")
         return current_fallback
 
     # Remembered by the version known before the scan, which is what the
     # next start sees at this point too.
     if state.get("declined_for_stable") == stable:
-        log(f"No fallback wanted for Chrome {stable}, keeping {display_name(keep.repo)}")
-        return keep
+        log(f"No fallback wanted for Chrome {stable}, keeping {name}")
+        return original
+    if not allow_picker:
+        return original
     declined_key = stable
 
     candidates = [r for r in scan_builds(state) if not same_repo(r.repo, REPO)]
     stable = effective_stable(state, [original.major, *[r.major for r in candidates]])
-    choice = pick_build(picker_spec("fallback", candidates, stable, original))
+    shown, choice = pick_build(picker_spec("fallback", candidates, stable, original))
     if choice is None:
-        log(f"No fallback build chosen, keeping {display_name(keep.repo)}")
-        state["declined_for_stable"] = declined_key
+        # The button says "Keep <configured build>", so that's what happens,
+        # also when an outdated fallback was in use.
+        log(f"No fallback build chosen, using {name}")
+        state.pop("fallback", None)
+        if shown:
+            # Only a real "no" is remembered; a picker that couldn't be shown
+            # or had nothing to offer is tried again on the next start.
+            state["declined_for_stable"] = declined_key
         save_state(state)
-        return keep
+        return original
 
     state.pop("declined_for_stable", None)
+    state["fallback"] = {"repo": choice.repo, "for": REPO}
     save_state(state)
     log(f"Using {display_name(choice.repo)} until {name} catches up")
     return choice
 
 
-def update_to_latest() -> None:
+def update_to_latest(allow_picker: bool = True) -> None:
     installed = read_installed()
     log("Checking latest release")
     original = fetch_release(REPO, ASSET_SUFFIX)
     target = original
     if OFFER_FALLBACK:
-        target = choose_release(original, installed, load_state())
+        target = choose_release(original, installed, load_state(), allow_picker)
     install(target, installed)
 
 
@@ -1414,11 +1449,14 @@ def main() -> None:
         log("Chromium is running, skipping the update check")
     else:
         try:
+            picker_shown = False
             if not chrome_exe.exists() and OFFER_FALLBACK:
-                choose_first_build(load_state())
-            update_to_latest()
-        except UpdateError as e:
-            # An update problem must never stand between the user and the browser.
+                picker_shown = choose_first_build(load_state())
+            # One picker per start is enough.
+            update_to_latest(allow_picker=not picker_shown)
+        except Exception as e:
+            # An update problem must never stand between the user and the
+            # browser, whatever kind of problem it is.
             if not chrome_exe.exists():
                 raise RuntimeError(f"{e}, and no Chromium is installed") from e
             log(f"{e} - launching the installed version")
