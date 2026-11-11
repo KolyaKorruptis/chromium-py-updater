@@ -439,9 +439,6 @@ def extract_archive(archive: Path, dest: Path) -> None:
     run_extractor([str(sevenzip), "x", "-y", f"-o{dest}", str(archive)])
 
 
-WIDEVINE_DIR = "WidevineCdm"
-
-
 def find_build_root(path: Path) -> Path:
     """The folder of the shallowest chrome.exe, a few levels deep at most.
 
@@ -461,13 +458,8 @@ def find_build_root(path: Path) -> Path:
         path = items[0]
 
 
-def extract_flat(archive: Path, extract_dir: Path, keep_widevine: bool = False) -> bool:
-    """Replace extract_dir with the build from archive.
-
-    keep_widevine carries a WidevineCdm folder the user added by hand over to
-    the new build, unless the new build brings its own. Returns whether the
-    archive itself contains a WidevineCdm folder.
-    """
+def extract_flat(archive: Path, extract_dir: Path) -> None:
+    """Replace extract_dir with the build from archive."""
     with tempfile.TemporaryDirectory(dir=BASE_DIR) as tmp_dir:
         tmp_path = Path(tmp_dir)
         unpacked = tmp_path / "unpacked"
@@ -481,28 +473,11 @@ def extract_flat(archive: Path, extract_dir: Path, keep_widevine: bool = False) 
             log("Flattening top-level folder")
         else:
             log("Moving extracted contents")
-        bundled_widevine = (root / WIDEVINE_DIR).is_dir()
-
-        # Parked outside the temp folder, so a failed update can't lose it;
-        # a leftover from such a failure is picked up on the next run.
-        parked = BASE_DIR / f"{WIDEVINE_DIR}.kept"
-        if keep_widevine and not parked.exists():
-            if (extract_dir / WIDEVINE_DIR).is_dir():
-                shutil.move(str(extract_dir / WIDEVINE_DIR), str(parked))
 
         recreate_dir(extract_dir)
 
         for item in list(root.iterdir()):
             shutil.move(str(item), str(extract_dir / item.name))
-
-        if parked.exists():
-            if bundled_widevine:
-                log(f"The new build brings its own {WIDEVINE_DIR}, yours stays in {parked.name}")
-            else:
-                log(f"Keeping the {WIDEVINE_DIR} folder you added")
-                shutil.move(str(parked), str(extract_dir / WIDEVINE_DIR))
-
-        return bundled_widevine
 
 
 def build_chromium_args(extra_args: list[str]) -> list[str]:
@@ -800,33 +775,16 @@ def read_installed() -> dict | None:
     return {"repo": REPO, "asset": text, "version": parse_version(text)}
 
 
-def write_installed(release: Release, bundled_widevine: bool) -> None:
+def write_installed(release: Release) -> None:
     data = {
         "repo": release.repo,
         "asset": release.name,
         "version": release.version,
-        "bundled_widevine": bundled_widevine,
         # The configured build at the time: if it differs from repo, this
         # release is a fallback standing in for it.
         "tracked": REPO,
     }
     VERSION_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def widevine_was_added_by_hand(installed: dict | None) -> bool:
-    """Whether bin/WidevineCdm is the user's own and has to be kept.
-
-    When that can't be told, it is kept: parking it costs nothing, deleting
-    a folder the user added can't be undone.
-    """
-    if not (EXTRACT_DIR / WIDEVINE_DIR).is_dir():
-        return False
-    bundled = installed.get("bundled_widevine") if installed else None
-    if bundled is not None:
-        return not bundled
-    # No or an old-style version file: go by the build table.
-    build = known_build(installed.get("repo") if installed else REPO)
-    return not build["widevine"] if build else True
 
 
 def local_archive_name(release: Release) -> str:
@@ -893,9 +851,7 @@ def install(release: Release, installed: dict | None) -> None:
         return
 
     try:
-        bundled_widevine = extract_flat(
-            archive, EXTRACT_DIR, keep_widevine=widevine_was_added_by_hand(installed)
-        )
+        extract_flat(archive, EXTRACT_DIR)
     except Exception as e:
         # A damaged archive must not be kept, or every later run repeats it.
         archive.unlink(missing_ok=True)
@@ -903,7 +859,7 @@ def install(release: Release, installed: dict | None) -> None:
 
     # Written only here: the version file records what is installed, not what
     # was downloaded.
-    write_installed(release, bundled_widevine)
+    write_installed(release)
     log(f"Installed {asset_name}")
 
 
